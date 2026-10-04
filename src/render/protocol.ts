@@ -1,0 +1,64 @@
+// Message protocol between the UI thread (RenderHost) and the render worker (RenderServer).
+
+import type { Project, RGBA } from '../core/types';
+import type { RenderOptions } from './renderer';
+
+export type RenderPurpose = 'view' | 'cache' | 'thumb';
+
+export interface FontSpec {
+  family: string;
+  url: string;
+  weight?: string;
+  style?: string;
+}
+
+export type ExportFormat = 'mp4' | 'webm' | 'webm-alpha' | 'gif' | 'png';
+
+export interface ExportJob {
+  jobId: string;
+  compId: string;
+  format: ExportFormat;
+  start: number;
+  end: number;
+  scale: number;
+  quality: 'low' | 'medium' | 'high' | 'very-high';
+  motionBlur: boolean;
+  filename: string;
+  /** pre-mixed audio (main thread OfflineAudioContext) */
+  audio?: { channels: Float32Array[]; sampleRate: number } | null;
+  gifFps?: number;
+}
+
+export type ToWorker =
+  | { type: 'init'; fonts: FontSpec[] }
+  | { type: 'project'; project: Project }
+  | { type: 'image'; id: string; bitmap: ImageBitmap }
+  | { type: 'video'; id: string; blob: Blob }
+  | { type: 'audio'; id: string; channels: Float32Array[]; sampleRate: number }
+  | { type: 'font'; family: string; buffer: ArrayBuffer; descriptors?: { weight?: string; style?: string } }
+  | { type: 'removeAsset'; id: string }
+  | { type: 'render'; id: number; key: string; purpose: RenderPurpose; opts: RenderOptions; bg: RGBA | null; maxSize?: number }
+  | { type: 'cancel'; purpose: RenderPurpose; keepIds?: number[] }
+  | { type: 'export'; job: ExportJob }
+  | { type: 'cancelExport'; jobId: string }
+  | { type: 'videoFrameReply'; reqId: number; bitmap: ImageBitmap | null };
+
+export interface WorkerCaps {
+  webgl2: boolean;
+  floatRender: boolean;
+  maxTex: number;
+  webcodecs: boolean;
+  offscreen: boolean;
+}
+
+export type FromWorker =
+  | { type: 'ready'; caps: WorkerCaps }
+  | { type: 'fatal'; message: string }
+  | { type: 'frame'; id: number; key: string; purpose: RenderPurpose; bitmap: ImageBitmap; ms: number; layers: number; errors: [string, string][]; time: number; compId: string }
+  | { type: 'renderError'; id: number; key: string; message: string }
+  | { type: 'cancelled'; ids: number[] }
+  | { type: 'needVideoFrame'; reqId: number; footageId: string; time: number }
+  | { type: 'exportProgress'; jobId: string; frame: number; total: number; preview: ImageBitmap | null; fps: number }
+  | { type: 'exportDone'; jobId: string; blob: Blob; filename: string }
+  | { type: 'exportError'; jobId: string; message: string }
+  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
