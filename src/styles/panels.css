@@ -531,6 +531,16 @@ a.btn {
 .sw.on {
   color: var(--text-2);
 }
+/* toggles that are usually off (audio, solo, lock): always visible, faded until enabled */
+.sw.dim:not(.on) {
+  opacity: 0.32;
+}
+.sw.dim:not(.on):hover {
+  opacity: 1;
+}
+.tl-left .av .sw.dim.on {
+  color: var(--accent-2);
+}
 .fx-card-head .sw.on,
 .gx .sw.on {
   color: var(--accent-2);

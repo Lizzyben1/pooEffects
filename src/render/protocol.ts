@@ -3,7 +3,7 @@
 import type { Project, RGBA } from '../core/types';
 import type { RenderOptions } from './renderer';
 
-export type RenderPurpose = 'view' | 'cache' | 'thumb';
+export type RenderPurpose = 'view' | 'cache' | 'thumb' | 'analysis';
 
 export interface FontSpec {
   family: string;
@@ -41,7 +41,12 @@ export type ToWorker =
   | { type: 'cancel'; purpose: RenderPurpose; keepIds?: number[] }
   | { type: 'export'; job: ExportJob }
   | { type: 'cancelExport'; jobId: string }
-  | { type: 'videoFrameReply'; reqId: number; bitmap: ImageBitmap | null };
+  | { type: 'videoFrameReply'; reqId: number; bitmap: ImageBitmap | null }
+  /** a MessagePort over which a CV worker requests analysis frames (see cv/protocol.ts) */
+  | { type: 'analysisPort'; port: MessagePort }
+  /** roto matte revision, deflate-compressed 8-bit alpha */
+  | { type: 'matte'; id: string; rev: number; w: number; h: number; data: Uint8Array }
+  | { type: 'dropMatte'; id: string; revs?: number[] };
 
 export interface WorkerCaps {
   webgl2: boolean;

@@ -1,7 +1,7 @@
 // Menubar definitions built from the command registry.
 
 import type { MenuItem } from '../../state/uiTypes';
-import { ALT, MOD, SHIFT, addTextAnimator, commands as C, newLayer, setTool, setWorkspace, togglePanel } from '../commands';
+import { ALT, MOD, SHIFT, addTextAnimator, commands as C, newLayer, setTool, setWorkspace, startTracking, togglePanel } from '../commands';
 import { activeComp, getApp, setViewer, viewerOf } from '../../state/store';
 import { EFFECT_CATEGORIES, EFFECTS } from '../../effects/catalog';
 import { addEffectToSelection } from '../../state/actions';
@@ -183,6 +183,12 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
           action: () => addTextAnimator(k),
         })),
       },
+      { separator: true },
+      { label: 'Track Camera', action: () => startTracking('camera') },
+      { label: 'Track Motion', action: () => startTracking('transform') },
+      { label: 'Stabilize Motion', action: () => startTracking('stabilize') },
+      { label: 'Track Perspective Corner Pin', action: () => startTracking('perspective') },
+      { label: 'Roto Brush (SAM 2)', shortcut: `${ALT}W`, action: () => startTracking('roto') },
       { separator: true },
       { label: 'Reveal Properties with Keyframes', shortcut: 'U', action: C.revealKeyframes },
       { label: 'Reveal Modified Properties', shortcut: 'UU', action: () => { C.revealKeyframes(); C.revealKeyframes(); } },

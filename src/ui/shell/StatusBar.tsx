@@ -15,6 +15,7 @@ const TOOL_HINTS: Record<Exclude<ToolId, 'camera'>, string> = {
   shape: 'Drag to draw (Shift constrains) · with a shape layer selected the path is added to it',
   pen: 'Click to add vertices · drag for Bézier handles · click the first vertex or press Enter to close',
   text: 'Click to create point text · click a text layer to edit its source text',
+  roto: 'Roto Brush (SAM 2): click the subject to add foreground · Alt-click or right-click adds background · propagate from the Tracker panel',
 };
 
 const CAMERA_HINTS: Record<CameraToolKind, string> = {

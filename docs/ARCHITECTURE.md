@@ -9,7 +9,8 @@ This document explains how pooEffects turns a project document into pixels:
 - the worker protocol;
 - the RAM cache and playback;
 - export;
-- the UI architecture.
+- the UI architecture;
+- the computer-vision & tracking subsystem (§14).
 
 File references are relative to `src/`.
 
@@ -406,7 +407,10 @@ with `null`, never reject, so callers simply skip a frame.
 
 - **Auto-save.** The project auto-saves to IndexedDB 1.5 s after the last change. Media blobs are stored on import, so
   reloading restores the session and its footage.
-- **`.pooe` files** are ZIP archives of `project.json` plus `media/<footageId>` blobs.
+- **`.pooe` files** are ZIP archives of `project.json` plus `media/<footageId>` blobs and `mattes/<matteId>/<rev>`
+  roto matte revisions (deflated 8-bit alpha).
+- **Roto mattes** live outside the document in an immutable revision store (`state/mattes.ts`), mirrored to IndexedDB and
+  to the render worker. The document maps frame → revision, so undo/redo restores earlier mattes exactly.
 - **Procedural footage.** The demo soundtrack is marked `procedural`. It is regenerated deterministically on load instead
   of being stored (`demo/music.ts`, synthesised with an `OfflineAudioContext` and encoded as 16-bit WAV).
 
@@ -414,7 +418,7 @@ with `null`, never reject, so callers simply skip a frame.
 
 ## 13. Tests
 
-`npm test` runs 31 node:test cases with tsx:
+`npm test` runs 45 node:test cases with tsx:
 
 - **Interpolation** (`tests/interpolate.test.ts`):
   - linear, hold and easy-ease segments, and clamping outside the keyed range;
@@ -441,3 +445,178 @@ with `null`, never reject, so callers simply skip a frame.
   - Trim Paths length, offset wrap-around, and trimming a stroke placed above it;
   - Repeater cloning fills and strokes;
   - group transforms baking into geometry and scaling stroke width.
+- **Computer vision** (`tests/cv-*.test.ts`, synthetic imagery from `tests/cvsynth.ts`):
+  - SVD / symmetric eigen / Cholesky accuracy, Rodrigues and AE Euler round trips (with continuity);
+  - FAST and Shi–Tomasi detection with minimum-distance spacing;
+  - pyramidal KLT on a 28 px sub-pixel shift (< 0.08 px error) and the NCC feature tracker under a gain change;
+  - homography RANSAC with 30 % outliers; essential-matrix pose recovery; PnP RANSAC with 20 % outliers;
+  - full camera solves: free move with **unknown focal length** (focal within 6 %, trajectory error < 6 %) and an
+    auto-detected tripod pan;
+  - planar tracker corners within 0.25 px after nine perspective frames; adaptive point tracking;
+  - marching-squares contours, resampling, distance transform and component filtering.
+
+---
+
+## 14. Computer vision & tracking
+
+Everything runs client-side. File references are relative to `src/`.
+
+### 14.1 Threads and the analysis frame channel
+
+```
+ UI thread                         render worker                        tracking worker (cv/worker.ts)
+ ──────────                        ─────────────                        ───────────────────────────────
+ state/tracking.ts ── job ───────────────────────────────────────────►  PointTracker · PlanarTracker · SfM
+ state/roto.ts     ── job ──────────────────────┐                        ▲  │ frame requests
+                                                │                        │  ▼
+ cv/host.ts: new MessageChannel() ─ port1 ─►  RenderServer  ◄──── port2 ─┘  (AnalysisRequest / Reply)
+                                   renders the layer's source through a synthetic single-layer comp,
+                                   readPixels → RGBA8 ArrayBuffer (transferred, never via the UI thread)
+                                                                         SAM 2 worker (cv/sam/worker.ts)
+                                                                         onnxruntime-web: WebGPU → WASM
+```
+
+- **Synthetic analysis comps** (`cv/host.ts → analysisComp`). A clone of the tracked layer with identity transform and
+  no masks, effects or matte, inside a comp the size of the layer source. Its timing (start, stretch, time remap) is kept,
+  so comp times map 1:1. This is what After Effects' Layer panel shows the tracker.
+- **Scheduling.** Analysis requests join the render server's queue with priority `view (0) < analysis (0.5) < cache (1) <
+  thumb (2)`, so the viewer stays responsive while a track runs.
+- **Read-ahead.** `cv/frames.ts` requests frame *i + 1* while frame *i* is processed. It keeps grayscale Gaussian pyramids
+  (with Scharr gradients) for the last few frames.
+
+### 14.2 Point tracker (Track Motion / Stabilize)
+
+`cv/klt.ts`, `cv/pointTracker.ts`. Each track point has a **feature region** (the template) inside a **search region**.
+1. **Coarse search.** Exhaustive normalised cross-correlation at the pyramid level where the template is about 6–16 px.
+   Window statistics come from integral images, so each candidate costs one dot product.
+2. **Refinement.** ±2 px NCC refinement on each finer level.
+3. **Sub-pixel Lucas–Kanade.** Inverse-compositional, translation-only alignment at level 0 with gain/bias normalisation
+   (robust to exposure changes).
+4. **Confidence** = final NCC × 100. Below the threshold the tracker continues, stops, extrapolates the previous velocity,
+   or re-grabs the template ("adapt"). "Adapt feature on every frame" refreshes the template every frame.
+
+Results stream back per frame and are written as linear keyframes on `trackers[].points[].featureCenter / attachPoint /
+confidence`. They show up in the timeline under *Motion Trackers*. A whole run is one undo step (`beginTx`/`endTx`).
+
+**Applying** (`state/tracking.ts`):
+- *Transform* writes the attach point, mapped tracked-layer → comp (→ target parent), into the target's position.
+  Two-point tracks add rotation (unwrapped angle delta) and scale (distance ratio).
+- *Stabilize* writes the attach point into the layer's own **anchor point** and pins position at the first frame's comp
+  location. Rotation and scale are inverted.
+- *Edit Target* chooses the layer (or a new Null) and X/Y dimensions.
+
+### 14.3 Planar tracker (perspective corner pin)
+
+`cv/planar.ts`, `cv/homography.ts`.
+- Shi–Tomasi features inside the quad are tracked frame to frame with forward–backward-checked KLT.
+- Every feature remembers its **reference-frame** position, so the homography is always estimated **reference → current**
+  (Hartley-normalised DLT inside MSAC RANSAC, then Gauss–Newton on the 8 parameters). Matrices are never chained.
+- **Drift removal.** Each inlier is re-aligned against the reference image resampled through H⁻¹, giving an exact
+  projective template. H is then re-estimated from the aligned points. On synthetic perspective motion the corners stay
+  within 0.25 px after nine frames.
+- Lost features are replenished inside the current quad and back-projected via H⁻¹.
+- *Apply* keyframes the target's **Corner Pin** effect with the four corners mapped into target-layer space.
+
+### 14.4 3D camera tracker
+
+`cv/features.ts`, `cv/geometry3d.ts`, `cv/bundle.ts`, `cv/sfm.ts`.
+1. **2D tracks.** FAST-9 candidates are re-scored by the Shi–Tomasi response and spaced on a grid. Tracking uses KLT
+   with a forward–backward check plus an 8-point **fundamental-matrix RANSAC** that rejects features sliding along edges
+   or riding moving objects. Features are replenished below 70 %.
+2. **Keyframes** are chosen by median displacement (≈3 % of width) and track survival.
+3. **Angle of view.**
+   - Sweep: each candidate focal (22°–98° horizontal) gets a quick reconstruction scored by reprojection error ÷ coverage.
+   - Golden-section polish around the best candidate.
+   - Final bundle adjustment with **focal as a free parameter**.
+   - Skipped when the user specifies the angle of view.
+4. **Initial pair.** The pair with the most parallax where an essential matrix (8-point on normalised coordinates,
+   Sampson-distance RANSAC) clearly beats a homography. Decompose E → (R, t), choose by cheirality, triangulate (DLT).
+5. **Incremental registration.**
+   - Each keyframe gets **PnP**: 6-point DLT in RANSAC, compared with a robust refinement seeded from the nearest
+     registered pose; the better one wins.
+   - New points are triangulated when their parallax exceeds 1° and every view reprojects within 3 px.
+6. **Bundle adjustment.** Levenberg–Marquardt with **Schur complement** elimination of the 3×3 point blocks, Huber IRLS,
+   rotation updates `R ← exp([δω]×)·R`, and an optional shared focal. Outlier observations and points are pruned between
+   passes.
+7. **All frames.**
+   - Non-keyframes are resected against the fixed cloud (motion-only LM), seeded by slerp / centre lerp.
+   - A **final bundle adjustment runs over every frame**, strided to at most 240 cameras, so the shot's end frames and
+     the focal length see all observations. Skipped frames are then re-resected.
+   - Outlier pruning uses a robust threshold, `max(1.25 px, 3 · 1.4826 · median error)`. An RMS-based threshold would be
+     inflated by the very outliers it should remove.
+8. **Tripod pans** (homography explains everything) are solved as **rotation-only cameras**: 2-point Kabsch RANSAC on
+   bearing vectors, then a rotation-only bundle adjustment with points on the unit sphere.
+
+**Measured on the Tracking Demo plate** (real rendered frames, 2 s, "Low" detail, 720 px analysis):
+- solve error 0.26 px RMS;
+- median per-point error 0.12 px;
+- 259 points;
+- yaw change −6.3° (ground truth ≈ −6.2°);
+- horizontal FOV 64.8° (ground truth 61.9°). The residual focal bias comes from the short, mostly lateral move.
+
+**Solver → comp space** (`sceneMap`):
+- The first camera becomes AE's default camera at `[w/2, h/2, −zoom]` with identity orientation.
+- `zoom = f · sourceScale · layerScale`.
+- The scene is scaled so the median track-point depth equals the zoom; track points then sit near *z = 0* at 100 % scale.
+- With a ground plane, the plane normal maps to −Y and the origin to the comp centre.
+- Camera orientation is `Q · R₀ · R_kᵀ`, decomposed into AE's X→Y→Z order with 360°-continuity.
+
+**Viewer.** Track points are drawn as crosses sized by nearness and coloured by depth. Hovering shows an AE-style target
+disc on the plane through the nearest three points. Selecting points (click / shift / marquee) enables *Set Ground Plane*
+and *Create Null / Solid / Text / Shadow Catcher and Camera*. Layers are oriented to the fitted plane.
+
+### 14.5 SAM 2 auto-rotoscope
+
+`cv/sam/engine.ts`, `cv/sam/worker.ts`, `state/roto.ts`, `state/mattes.ts`.
+- **Model.** `onnx-community/sam2.1-hiera-tiny-ONNX`: vision encoder plus prompt-encoder/mask-decoder.
+  - Precision variants: fp16 (default with WebGPU), int8 and fp32.
+  - Downloaded once and cached in **Cache Storage**, or loaded from local files.
+  - Executed by `onnxruntime-web/webgpu` in a worker. Falls back to the WASM backend; the wasm binary is a Vite asset.
+- **Inference.**
+  - Frames are resized to 1024² (SAM 2 does not preserve aspect) and ImageNet-normalised.
+  - Embeddings for the three most recent frames are cached, so extra clicks on one frame re-run only the decoder.
+  - The 256² logits are bilinearly upsampled to the matte raster (long edge ≤ 1024) and passed through a sigmoid, giving a
+    soft 8-bit alpha.
+- **Prompts.** Click = foreground, Alt/right-click = background. Prompts are stored per frame in the document.
+- **Temporal propagation.** This ONNX export has no memory-attention inputs, so the previous result is carried forward as
+  prompts instead:
+  1. Sparse KLT flow between consecutive frames.
+  2. A RANSAC homography over features inside the object warps the previous matte.
+  3. The warped matte yields a box prompt and positive points at well-separated distance-transform maxima. Tracked
+     background features just outside become negative points.
+  4. Of SAM's three hypotheses, the one maximising 0.65·IoU(warped) + 0.35·predicted-IoU wins. A collapsing object score
+     or IoU stops the run ("object lost").
+  5. Propagation stops at the next frame that carries user prompts, so corrections act as keyframes.
+  6. On a synthetic moving object the real model holds IoU ≥ 0.996 over ten propagated frames.
+- **Refine edge (GPU).** The *Roto Brush & Refine Edge* effect resamples the matte into the effect rect, then:
+  - optional neighbour blend (*Reduce Chatter*);
+  - separable max/min morphology (*Shift Edge*);
+  - Gaussian *Feather*;
+  - sigmoid-like *Contrast*;
+  - **Decontaminate Edge Colors**: semi-transparent edge pixels take the blurred colour of nearby core-foreground pixels,
+    with weight `amount · (1 − α)`.
+- **Freeze.**
+  - *Bake to Track Matte* duplicates the layer (keeping only the roto effect) and sets it as the original's alpha matte.
+  - *Bake to Mask Path* traces every frame with marching squares, resamples to a perimeter-based vertex count, aligns
+    vertex order to the previous frame (no swimming), fits Catmull–Rom Bézier tangents and keyframes one animated mask.
+
+### 14.6 UI
+
+- **Tracker panel** (`ui/panels/TrackerPanel.tsx`) has three modes:
+  - Motion: Track Motion, Stabilize or Perspective; position/rotation/scale; Edit Target; ±1 frame and forward/backward
+    transport, stop; options; reset and apply.
+  - 3D Camera: shot type, angle of view, detail; solve stats; per-frame error chart; scene scale; creation actions.
+  - Roto Brush: model status and download, prompts, propagate, refine controls, freeze.
+- **Viewer overlay** (`ui/viewer/trackOverlay.ts`):
+  - feature/search boxes with resize handles (Alt-drag moves the feature region alone);
+  - attach-point crosshair, confidence label and motion path;
+  - a 4× magnifier loupe while dragging;
+  - the perspective quad with its live feature cloud;
+  - camera track points and roto contours with prompt dots.
+- **Timeline.** A *Motion Trackers* property group, plus an analysis strip under the ruler:
+  - per-frame confidence (green → red);
+  - camera solve error;
+  - roto frames (pink, user frames brighter);
+  - a glowing head while a job runs.
+- **Workspace and shortcuts.** A *Motion Tracking* workspace, the Roto Brush tool (<kbd>Alt+W</kbd>), *Animation ▸ Track
+  …* menu items and a layer *Tracking* submenu.

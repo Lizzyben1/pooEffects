@@ -29,6 +29,9 @@ import {
 import { polystarToPath } from '../../shapes/generators';
 import { layerContextMenu } from '../menus/layerMenu';
 import { customEye } from '../../render/projection';
+import { camPointsInRect, drawTrackOverlay, featureCenterAt, hitTrack, screenToLayer, type TrackHit } from './trackOverlay';
+import { createAtTrackPoints, editTrackPoint, findTracker, getTracking, isTrackable, setGroundPlane, setTracking, useTracking } from '../../state/tracking';
+import { addRotoPoint, useRoto } from '../../state/roto';
 
 interface Props {
   comp: Composition;
@@ -69,6 +72,9 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
   const seq = useRef(0);
   const drawnSeq = useRef(0);
   const ov = useRef<OverlayState>({ hover: null, marquee: null, shapeDraft: null, pen: null, selectedVertex: null });
+  const trackHover = useRef<TrackHit | null>(null);
+  const trackMarquee = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const loupe = useRef<{ sx: number; sy: number } | null>(null);
   const [textEdit, setTextEdit] = useState<{ layerId: string; x: number; y: number; w: number; h: number; size: number } | null>(null);
   const spaceHeld = useRef(false);
   const renderPending = useRef(false);
@@ -153,6 +159,47 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     const cp = app.project.comps[compRef.current.id] ?? compRef.current;
     const v = makeViewCtx(app.project, cp, getTime(cp.id), viewRef.current, xfRef.current);
     drawOverlay(ctx, v, app, ov.current, sz.w, sz.h, isActivePane);
+    drawTrackOverlay(ctx, v, app, getTracking(), useRoto.getState(), trackHover.current);
+    if (trackMarquee.current) {
+      const m = trackMarquee.current;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = '#ffd24a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(Math.min(m.x0, m.x1), Math.min(m.y0, m.y1), Math.abs(m.x1 - m.x0), Math.abs(m.y1 - m.y0));
+      ctx.setLineDash([]);
+    }
+    if (loupe.current) drawLoupe(ctx, loupe.current.sx, loupe.current.sy);
+  };
+
+  /** 4× magnifier of the rendered frame around the dragged feature (like AE's feature zoom). */
+  const drawLoupe = (ctx: CanvasRenderingContext2D, sx: number, sy: number) => {
+    const src = imgCanvas.current;
+    if (!src) return;
+    const R = 64, Z = 4;
+    const ox = sx + 26 + R * 2 > sizeRef.current.w ? sx - 26 - R * 2 : sx + 26;
+    const oy = Math.max(6, Math.min(sizeRef.current.h - R * 2 - 6, sy - R));
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(ox, oy, R * 2, R * 2, 10);
+    ctx.clip();
+    ctx.imageSmoothingEnabled = false;
+    const half = R / Z;
+    try {
+      ctx.drawImage(src, (sx - half) * dpr, (sy - half) * dpr, half * 2 * dpr, half * 2 * dpr, ox, oy, R * 2, R * 2);
+    } catch {
+      /* canvas not ready */
+    }
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(ox, oy, R * 2, R * 2, 10);
+    ctx.stroke();
+    ctx.strokeStyle = '#ffd24a';
+    ctx.beginPath();
+    ctx.moveTo(ox + R - 8, oy + R); ctx.lineTo(ox + R + 8, oy + R);
+    ctx.moveTo(ox + R, oy + R - 8); ctx.lineTo(ox + R, oy + R + 8);
+    ctx.stroke();
   };
 
   // ── render requests ──
@@ -212,6 +259,16 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     return useApp.subscribe((s, prev) => {
       if (s.selLayers !== prev.selLayers || s.selKeys !== prev.selKeys || s.selEffect !== prev.selEffect || s.selShapeItem !== prev.selShapeItem || s.viewers !== prev.viewers) paintOverlay();
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size.w, size.h, isActivePane]);
+
+  useEffect(() => {
+    const a = useTracking.subscribe(() => paintOverlay());
+    const b = useRoto.subscribe(() => paintOverlay());
+    return () => {
+      a();
+      b();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size.w, size.h, isActivePane]);
 
@@ -321,6 +378,10 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     if (tool === 'shape') return shapeDrag(e, sx, sy);
     if (tool === 'pen') return penDown(e, sx, sy);
     if (tool === 'text') return textClick(sx, sy, v);
+    if (tool === 'roto') return rotoClick(sx, sy, v, e.altKey ? 0 : 1);
+    const th = tool === 'select' ? hitTrack(v, app, getTracking(), sx, sy) : null;
+    if (th) return trackDrag(e, th, v, sx, sy);
+    if (tool === 'select' && trackPointMode(app)) return trackPointMarquee(e, sx, sy);
     const handle = hitHandle(v, app, sx, sy, ov.current.selectedVertex);
     if (handle && tool !== 'rotate') return handleDrag(e, handle, v, sx, sy);
     if (tool === 'panBehind') {
@@ -371,6 +432,108 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       if (ids.length) selectLayers(ids, e.shiftKey ? 'add' : 'set');
     }, false);
   };
+
+  /** Roto Brush tool: click = foreground prompt, Alt/right-click = background prompt. */
+  function rotoClick(sx: number, sy: number, v: ViewCtx, label: 0 | 1) {
+    const app = getApp();
+    const sel = v.comp.layers.find((l) => app.selLayers.includes(l.id) && isTrackable(l));
+    const target = sel ?? (() => {
+      const h = hitLayer(v, sx, sy, true);
+      return h && isTrackable(h) ? h : null;
+    })();
+    if (!target) {
+      toast('Click on a footage or precomp layer to roto it', 'info');
+      return;
+    }
+    const p = screenToLayer(v, target, sx, sy);
+    if (!p) return;
+    if (!app.selLayers.includes(target.id)) selectLayers([target.id]);
+    addRotoPoint(comp.id, target.id, p[0], p[1], label);
+  }
+
+  /** Camera-track point selection is active when a solved layer is selected in camera mode. */
+  function trackPointMode(app: ReturnType<typeof getApp>): boolean {
+    const tr = getTracking();
+    if (!tr.showTrackPoints || tr.mode !== 'camera') return false;
+    return app.project.comps[comp.id]?.layers.some((l) => l.cameraTrack?.solved && app.selLayers.includes(l.id)) ?? false;
+  }
+
+  function trackPointMarquee(e: React.PointerEvent, sx: number, sy: number) {
+    const additive = e.shiftKey;
+    trackMarquee.current = { x0: sx, y0: sy, x1: sx, y1: sy };
+    drag((ev) => {
+      const [x, y] = local(ev);
+      trackMarquee.current = { x0: sx, y0: sy, x1: x, y1: y };
+    }, () => {
+      const m = trackMarquee.current;
+      trackMarquee.current = null;
+      if (!m) return;
+      if (Math.abs(m.x1 - m.x0) < 3 && Math.abs(m.y1 - m.y0) < 3) {
+        if (!additive) setTracking({ camSel: [] });
+        return;
+      }
+      const ids = camPointsInRect(vctx(), getApp(), getTracking(), Math.min(m.x0, m.x1), Math.min(m.y0, m.y1), Math.max(m.x0, m.x1), Math.max(m.y0, m.y1));
+      setTracking({ camSel: additive ? [...new Set([...getTracking().camSel, ...ids])] : ids });
+    }, false);
+  }
+
+  function trackDrag(e: React.PointerEvent, h: TrackHit, v: ViewCtx, sx: number, sy: number) {
+    if (h.kind === 'camPoint') {
+      const cur = getTracking().camSel;
+      setTracking({ camSel: e.shiftKey ? (cur.includes(h.id) ? cur.filter((x) => x !== h.id) : [...cur, h.id]) : cur.includes(h.id) ? cur : [h.id] });
+      return;
+    }
+    const f = findTracker(v.project, comp.id, h.layerId, h.trackerId);
+    if (!f) return;
+    const { layer, tracker } = f;
+    const p = tracker.points.find((x) => x.id === h.pointId);
+    if (!p) return;
+    setTracking({ activePoint: p.id });
+    if (!getApp().selLayers.includes(layer.id)) selectLayers([layer.id]);
+    const t = getTime(comp.id);
+    const c0 = featureCenterAt(layer, tracker, p.id, t) ?? [0, 0];
+    const attach0 = [c0[0] + p.attachOffset[0], c0[1] + p.attachOffset[1]];
+    const start = screenToLayer(v, layer, sx, sy);
+    if (!start) return;
+    const fs0 = p.featureSize.slice(), ss0 = p.searchSize.slice(), so0 = p.searchOffset.slice();
+    const showLoupe = h.kind === 'feature' || h.kind === 'featureEdge';
+    if (showLoupe) loupe.current = { sx, sy };
+    drag((ev) => {
+      const [x, y] = local(ev);
+      const vv = vctx();
+      const L = vv.comp.layers.find((l) => l.id === layer.id);
+      if (!L) return;
+      const cur = screenToLayer(vv, L, x, y);
+      if (!cur) return;
+      const dx = cur[0] - start[0], dy = cur[1] - start[1];
+      if (showLoupe) {
+        const ctr = h.kind === 'feature' ? [c0[0] + dx, c0[1] + dy] : c0;
+        const s = layerPointToScreen(vv, L, ctr);
+        loupe.current = s ? { sx: s[0], sy: s[1] } : null;
+      }
+      switch (h.kind) {
+        case 'feature':
+          // Alt-drag moves the feature region alone (search region stays put)
+          if (ev.altKey) editTrackPoint(comp.id, layer.id, tracker.id, p.id, { center: [c0[0] + dx, c0[1] + dy], searchOffset: [so0[0] - dx, so0[1] - dy] });
+          else editTrackPoint(comp.id, layer.id, tracker.id, p.id, { center: [c0[0] + dx, c0[1] + dy] });
+          break;
+        case 'search':
+          editTrackPoint(comp.id, layer.id, tracker.id, p.id, { searchOffset: [so0[0] + dx, so0[1] + dy] });
+          break;
+        case 'featureEdge':
+          editTrackPoint(comp.id, layer.id, tracker.id, p.id, { featureSize: [h.ix ? fs0[0] + 2 * dx * h.ix : fs0[0], h.iy ? fs0[1] + 2 * dy * h.iy : fs0[1]] });
+          break;
+        case 'searchEdge':
+          editTrackPoint(comp.id, layer.id, tracker.id, p.id, { searchSize: [h.ix ? ss0[0] + 2 * dx * h.ix : ss0[0], h.iy ? ss0[1] + 2 * dy * h.iy : ss0[1]] });
+          break;
+        case 'attach':
+          editTrackPoint(comp.id, layer.id, tracker.id, p.id, { attach: [attach0[0] + dx, attach0[1] + dy] });
+          break;
+      }
+    }, () => {
+      loupe.current = null;
+    });
+  }
 
   function zoomAt(sx: number, sy: number, factor: number) {
     const x = xfRef.current;
@@ -904,6 +1067,23 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     }
     if (e.buttons) return;
     const v = vctx();
+    const th = tool === 'select' ? hitTrack(v, app, getTracking(), sx, sy) : null;
+    if (JSON.stringify(th) !== JSON.stringify(trackHover.current)) {
+      trackHover.current = th;
+      const camHover = th?.kind === 'camPoint' ? th.id : null;
+      if (getTracking().camHover !== camHover) setTracking({ camHover });
+      paintOverlay();
+    }
+    if (th) {
+      wrap.current!.style.cursor = th.kind === 'featureEdge' || th.kind === 'searchEdge'
+        ? (th.ix === 0 ? 'ns-resize' : th.iy === 0 ? 'ew-resize' : th.ix === th.iy ? 'nwse-resize' : 'nesw-resize')
+        : th.kind === 'camPoint' ? 'pointer' : th.kind === 'attach' ? 'crosshair' : 'move';
+      return;
+    }
+    if (tool === 'roto') {
+      wrap.current!.style.cursor = 'crosshair';
+      return;
+    }
     const h = tool === 'select' || tool === 'panBehind' ? hitHandle(v, app, sx, sy, ov.current.selectedVertex) : null;
     const prev = ov.current.hover;
     if (JSON.stringify(prev) !== JSON.stringify(h)) {
@@ -951,6 +1131,31 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     e.preventDefault();
     const [sx, sy] = local(e);
     const v = vctx();
+    if (tool === 'roto') {
+      rotoClick(sx, sy, v, 0);
+      return;
+    }
+    const app0 = getApp();
+    const camLayer = v.comp.layers.find((l) => l.cameraTrack?.solved && app0.selLayers.includes(l.id));
+    if (camLayer && getTracking().showTrackPoints) {
+      const h = hitTrack(v, app0, getTracking(), sx, sy);
+      if (h?.kind === 'camPoint' && !getTracking().camSel.includes(h.id)) setTracking({ camSel: [h.id] });
+      const n = getTracking().camSel.length;
+      if (n) {
+        openContextMenu(e.clientX, e.clientY, [
+          { label: `Set Ground Plane and Origin${n < 3 ? ' (needs 3 points)' : ''}`, action: () => setGroundPlane(comp.id, camLayer.id), disabled: n < 3 },
+          { label: '', separator: true },
+          { label: 'Create Null and Camera', action: () => createAtTrackPoints(comp.id, camLayer.id, 'null') },
+          { label: 'Create Solid and Camera', action: () => createAtTrackPoints(comp.id, camLayer.id, 'solid') },
+          { label: 'Create Text and Camera', action: () => createAtTrackPoints(comp.id, camLayer.id, 'text') },
+          { label: `Create ${n} Nulls and Camera`, action: () => createAtTrackPoints(comp.id, camLayer.id, 'null', true), disabled: n < 2 },
+          { label: 'Create Shadow Catcher and Camera', action: () => createAtTrackPoints(comp.id, camLayer.id, 'shadowCatcher'), disabled: n < 3 },
+          { label: '', separator: true },
+          { label: 'Deselect Track Points', action: () => setTracking({ camSel: [] }) },
+        ]);
+        return;
+      }
+    }
     const hit = hitLayer(v, sx, sy);
     if (hit && !getApp().selLayers.includes(hit.id)) selectLayers([hit.id]);
     const ids = hit ? getApp().selLayers : [];

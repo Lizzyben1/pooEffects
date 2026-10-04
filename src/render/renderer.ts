@@ -54,6 +54,8 @@ export interface AssetHost {
   image(footageId: string): ImageBitmap | null;
   videoFrame(footageId: string, footageTime: number): { frame: TexImageSource; key: string; w: number; h: number } | null;
   audioSamples(footageId: string, t: number, dur: number): { data: Float32Array; sampleRate: number } | null;
+  /** decoded roto matte revision (8-bit alpha) */
+  matte?(matteId: string, rev: number): { data: Uint8Array; w: number; h: number; key: string } | null;
 }
 
 interface LayerImage {
@@ -187,6 +189,7 @@ export class Renderer {
   private videoTex = new Map<string, { tex: Tex; key: string }>();
   private raster = new Map<string, RasterEntry>();
   private maskUpload: Tex | null = null;
+  private matteTex = new Map<string, Tex>();
   private frameNo = 0;
   errors = new Map<string, string>();
   lastStats = { layers: 0, ms: 0 };
@@ -845,6 +848,31 @@ export class Renderer {
     return { tex: out, rect: img.rect, scale: img.scale, owned: true };
   }
 
+  // ── roto mattes ───────────────────────────────────────────────────────────
+
+  /** Upload (and LRU-cache) a matte revision as an RGBA texture whose every channel is the alpha. */
+  private matteTexture(id: string, rev: number): Tex | null {
+    const m = this.assets.matte?.(id, rev);
+    if (!m) return null;
+    let t = this.matteTex.get(m.key);
+    if (t) {
+      this.matteTex.delete(m.key);
+      this.matteTex.set(m.key, t);
+      return t;
+    }
+    const rgba = new Uint8Array(m.w * m.h * 4);
+    for (let i = 0, j = 0; i < m.data.length; i++, j += 4) rgba[j] = rgba[j + 1] = rgba[j + 2] = rgba[j + 3] = m.data[i];
+    t = this.glc.createUploadTexture();
+    this.glc.uploadPixels(t, rgba, m.w, m.h);
+    this.matteTex.set(m.key, t);
+    while (this.matteTex.size > 6) {
+      const [k, old] = this.matteTex.entries().next().value as [string, Tex];
+      this.glc.deleteTex(old);
+      this.matteTex.delete(k);
+    }
+    return t;
+  }
+
   // ── effects ───────────────────────────────────────────────────────────────
 
   private audioAccess(fe: FrameEval): AudioAccess {
@@ -877,6 +905,7 @@ export class Renderer {
       const ctx: FxCtx = {
         glc, fe, layer, time: fe.time, rect: cur.rect, scale: cur.scale, params, format: cur.tex.format,
         canvas: this.canvases, audio: this.audioAccess(fe), fps: exactFps(cc.comp.frameRate),
+        matte: (id, rev) => this.matteTexture(id, rev),
       };
       let out: Tex;
       try {

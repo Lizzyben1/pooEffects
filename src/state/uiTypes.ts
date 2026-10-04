@@ -4,13 +4,14 @@ import type { ViewSpec } from '../render/renderer';
 import type { ExportFormat } from '../render/protocol';
 
 export type PanelId =
-  | 'project' | 'viewer' | 'timeline' | 'effectControls' | 'effects' | 'preview' | 'info' | 'character' | 'align' | 'renderQueue' | 'flowchart';
+  | 'project' | 'viewer' | 'timeline' | 'effectControls' | 'effects' | 'preview' | 'info' | 'character' | 'align' | 'renderQueue' | 'flowchart'
+  | 'tracker';
 
 export type DockNode =
   | { type: 'split'; id: string; dir: 'row' | 'col'; children: DockNode[]; sizes: number[] }
   | { type: 'tabs'; id: string; panels: PanelId[]; active: PanelId };
 
-export type ToolId = 'select' | 'hand' | 'zoom' | 'rotate' | 'camera' | 'panBehind' | 'shape' | 'pen' | 'text';
+export type ToolId = 'select' | 'hand' | 'zoom' | 'rotate' | 'camera' | 'panBehind' | 'shape' | 'pen' | 'text' | 'roto';
 export type ShapeToolKind = 'rect' | 'roundedRect' | 'ellipse' | 'polygon' | 'star';
 export type CameraToolKind = 'orbit' | 'trackXY' | 'trackZ';
 export type Resolution = 'auto' | 'full' | 'half' | 'third' | 'quarter';
@@ -86,7 +87,9 @@ export type DialogState =
   | { kind: 'about' }
   | { kind: 'rename'; title: string; value: string; onSubmit: (v: string) => void }
   | { kind: 'export'; compId: string }
-  | { kind: 'welcome' };
+  | { kind: 'welcome' }
+  | { kind: 'trackTarget'; compId: string; layerId: string; trackerId: string }
+  | { kind: 'samModel' };
 
 export interface RenderQueueItem {
   id: string;

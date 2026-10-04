@@ -33,6 +33,7 @@ import { uid } from '../core/ids';
 import { defaultEases, EASY_EASE_INFLUENCE, LINEAR_INFLUENCE } from '../anim/interpolate';
 import { mulberry32 } from '../math/noise';
 import { DEMO_MUSIC_DURATION, DEMO_MUSIC_KEY } from './music';
+import { buildTrackingDemo } from './trackingPlate';
 
 // ── keyframe helpers ────────────────────────────────────────────────────────
 
@@ -380,9 +381,13 @@ export function buildDemoProject(): DemoBuild {
   project.comps[mandala.id] = mandala;
   project.comps[logo.id] = logo;
   project.comps[chips.id] = chips;
+  const tracking = buildTrackingDemo();
+  project.comps[tracking.demo.id] = tracking.demo;
+  project.comps[tracking.plate.id] = tracking.plate;
+  project.comps[tracking.card.id] = tracking.card;
   const precompFolder = uid('fd');
   project.folders[precompFolder] = { id: precompFolder, name: 'Precomps', folderId: null };
-  for (const c of [mandala, logo, chips]) c.folderId = precompFolder;
+  for (const c of [mandala, logo, chips, tracking.plate, tracking.card]) c.folderId = precompFolder;
 
   // ── soundtrack ──
   const music = createFootage({

@@ -2,7 +2,7 @@
   "name": "pooeffects",
   "private": true,
   "version": "1.0.0",
-  "description": "pooEffects \u2014 a browser-native motion graphics, VFX & compositing workstation",
+  "description": "pooEffects — a browser-native motion graphics, VFX & compositing workstation",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -26,6 +26,7 @@
     "immer": "^11.1.21",
     "lucide-react": "^1.51.0",
     "mediabunny": "^1.61.1",
+    "onnxruntime-web": "^1.30.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zustand": "^5.0.15"

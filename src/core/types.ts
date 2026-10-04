@@ -498,6 +498,131 @@ export interface MaterialOptions {
   metal: AnimProp<number>;
 }
 
+// ── Motion tracking ─────────────────────────────────────────────────────────
+
+export type TrackChannel = 'luminance' | 'red' | 'green' | 'blue' | 'saturation';
+/** transform = Track Motion (1–2 points), stabilize = Stabilize Motion, perspective = planar corner pin */
+export type TrackerKind = 'transform' | 'stabilize' | 'perspective';
+export type LowConfidenceAction = 'continue' | 'stop' | 'extrapolate' | 'adapt';
+
+export interface TrackerOptions {
+  channel: TrackChannel;
+  /** Gaussian pre-blur (sigma, pixels) applied before matching */
+  blur: number;
+  /** refresh the feature template on every frame */
+  adaptFeature: boolean;
+  /** search around the position predicted from the previous motion */
+  predictMotion: boolean;
+  subpixel: boolean;
+  /** 0..100 */
+  confidenceThreshold: number;
+  onLowConfidence: LowConfidenceAction;
+}
+
+/** One feature point. All coordinates are LAYER (source) pixels. */
+export interface TrackPoint {
+  id: string;
+  name: string;
+  enabled: boolean;
+  featureCenter: AnimProp<number[]>;
+  /** [w, h] */
+  featureSize: number[];
+  /** search-region centre relative to the feature centre */
+  searchOffset: number[];
+  /** [w, h] */
+  searchSize: number[];
+  /** 0..100 */
+  confidence: AnimProp<number>;
+  attachPoint: AnimProp<number[]>;
+  /** attach point − feature centre */
+  attachOffset: number[];
+}
+
+export interface Tracker {
+  id: string;
+  name: string;
+  kind: TrackerKind;
+  position: boolean;
+  rotation: boolean;
+  scale: boolean;
+  /** transform/stabilize: 1–2 points; perspective: 4 corners (UL, UR, LR, LL) */
+  points: TrackPoint[];
+  targetLayerId: string | null;
+  applyDims: 'xy' | 'x' | 'y';
+  options: TrackerOptions;
+}
+
+export interface CameraSolveFrame {
+  /** world → camera rotation, row-major 3×3 (solver space) */
+  R: number[];
+  t: number[];
+}
+
+export interface CameraTrackPoint {
+  id: number;
+  /** solver-space position */
+  X: number[];
+  /** median reprojection error (analysis pixels) */
+  error: number;
+  /** first/last analysed frame index in which the feature was tracked */
+  first: number;
+  last: number;
+  color: number[];
+}
+
+export interface CameraTrack {
+  id: string;
+  shotType: 'auto' | 'free' | 'tripod';
+  /** specified horizontal angle of view (degrees); null = estimate */
+  fov: number | null;
+  detail: 'low' | 'medium' | 'high';
+  solved: boolean;
+  /** analysis raster (pixels) and source pixels per analysis pixel */
+  width: number;
+  height: number;
+  sourceScale: number;
+  mode: 'free' | 'tripod';
+  /** focal length, analysis pixels */
+  f: number;
+  /** layer time of analysed frame 0 and the frame duration */
+  t0: number;
+  dt: number;
+  frames: CameraSolveFrame[];
+  /** RMS reprojection error per frame (analysis pixels, −1 when unsolved) */
+  frameError: number[];
+  points: CameraTrackPoint[];
+  rms: number;
+  /** solver-space ground plane: origin + unit normal (pointing away from the cameras) */
+  ground: { origin: number[]; normal: number[] } | null;
+  /** solver-space → comp-space scale multiplier chosen by the user (1 = automatic) */
+  sceneScale: number;
+}
+
+/**
+ * Roto (SAM 2) segmentation. Matte pixels live outside the document in an immutable revision store;
+ * the document maps frame → revision, so undo/redo restores earlier mattes exactly.
+ */
+export interface MattePrompt {
+  /** layer-time frame index (round(layerTime × fps)) */
+  frame: number;
+  /** matte pixels; label 1 = foreground, 0 = background */
+  points: [number, number, number][];
+}
+
+export interface MatteInfo {
+  id: string;
+  layerId: string;
+  name: string;
+  /** matte raster size */
+  width: number;
+  height: number;
+  /** frame indexing rate (comp frame rate at creation) */
+  fps: number;
+  /** layer-time frame index → matte revision id */
+  revs: Record<string, number>;
+  prompts: MattePrompt[];
+}
+
 // ── Layers ──────────────────────────────────────────────────────────────────
 
 export type LayerType =
@@ -556,6 +681,8 @@ export interface Layer {
   camera?: CameraData;
   light?: LightData;
   audio?: { levels: AnimProp<number[]> };
+  trackers?: Tracker[];
+  cameraTrack?: CameraTrack | null;
 }
 
 // ── Composition & project ───────────────────────────────────────────────────
@@ -634,6 +761,8 @@ export interface Project {
   footage: Record<string, Footage>;
   folders: Record<string, Folder>;
   settings: ProjectSettings;
+  /** roto segmentations (matte pixels are stored outside the document) */
+  mattes?: Record<string, MatteInfo>;
 }
 
 // ── Property descriptors (UI + evaluation metadata) ─────────────────────────

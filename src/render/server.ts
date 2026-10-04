@@ -12,7 +12,8 @@ import { Renderer, collectVideoNeeds, type RenderOptions } from './renderer';
 import { WorkerAssets } from './assets';
 import { clearTextCaches } from '../text/layout';
 import { runExport } from '../export/exporter';
-import type { RGBA } from '../core/types';
+import type { Composition, RGBA } from '../core/types';
+import type { AnalysisReply, AnalysisRequest } from '../cv/protocol';
 
 interface Job {
   id: number;
@@ -21,9 +22,11 @@ interface Job {
   opts: RenderOptions;
   bg: RGBA | null;
   maxSize?: number;
+  /** analysis frame request: reply over this port instead of posting a 'frame' */
+  analysis?: { port: MessagePort; reqId: number };
 }
 
-const PRIORITY: Record<RenderPurpose, number> = { view: 0, cache: 1, thumb: 2 };
+const PRIORITY: Record<RenderPurpose, number> = { view: 0, analysis: 0.5, cache: 1, thumb: 2 };
 
 const yieldLoop = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -39,6 +42,8 @@ export class RenderServer {
   private fallbackReqs = new Map<number, (b: ImageBitmap | null) => void>();
   private nextFallback = 1;
   private post: Post;
+  private analysisComps = new Map<string, Composition>();
+  private nextAnalysisJob = -1;
   private canvasFactory: () => OffscreenCanvas | HTMLCanvasElement;
 
   constructor(post: Post, canvasFactory?: () => OffscreenCanvas | HTMLCanvasElement) {
@@ -182,6 +187,75 @@ export class RenderServer {
         cb?.(msg.bitmap);
         break;
       }
+      case 'analysisPort': {
+        const port = msg.port;
+        port.onmessage = (e: MessageEvent<AnalysisRequest>) => this.onAnalysis(port, e.data);
+        port.start?.();
+        break;
+      }
+      case 'matte':
+        this.assets.setMatte(msg.id, msg.rev, msg.w, msg.h, msg.data);
+        break;
+      case 'dropMatte':
+        this.assets.dropMatte(msg.id, msg.revs);
+        break;
+    }
+  }
+
+  private onAnalysis(port: MessagePort, m: AnalysisRequest): void {
+    switch (m.type) {
+      case 'comp':
+        this.analysisComps.set(m.key, m.comp);
+        break;
+      case 'dropComp':
+        this.analysisComps.delete(m.key);
+        break;
+      case 'frame': {
+        const comp = this.analysisComps.get(m.key);
+        if (!comp) {
+          const reply: AnalysisReply = { type: 'frameError', reqId: m.reqId, message: 'analysis comp not registered' };
+          port.postMessage(reply);
+          break;
+        }
+        this.queue.push({
+          id: this.nextAnalysisJob--, key: m.key, purpose: 'analysis', bg: null,
+          opts: { compId: comp.id, time: m.time, scale: m.scale, guides: false, draft: false, motionBlur: false },
+          analysis: { port, reqId: m.reqId },
+        });
+        void this.pump();
+        break;
+      }
+    }
+  }
+
+  /** Render a layer's source through its synthetic comp and send raw RGBA8 pixels to the CV worker. */
+  private async renderAnalysis(job: Job): Promise<void> {
+    const { port, reqId } = job.analysis!;
+    try {
+      const r = this.renderer;
+      const comp = this.analysisComps.get(job.key);
+      if (!r || !this.project || !comp) throw new Error('renderer not ready');
+      const project = { ...this.project, comps: { ...this.project.comps, [comp.id]: comp } };
+      const needs = new Map<string, number[]>();
+      collectVideoNeeds(project, comp, job.opts.time, needs);
+      if (needs.size) await this.assets.prepare(needs);
+      r.setProject(project);
+      let px: Uint8Array, w: number, h: number;
+      try {
+        const res = r.render(job.opts);
+        if (!res) throw new Error('analysis comp missing');
+        px = r.readPixels(res.tex);
+        w = res.tex.w;
+        h = res.tex.h;
+        r.endFrame();
+      } finally {
+        r.setProject(this.project);
+      }
+      const reply: AnalysisReply = { type: 'frame', reqId, width: w, height: h, pixels: px.buffer as ArrayBuffer };
+      port.postMessage(reply, [px.buffer as ArrayBuffer]);
+    } catch (e) {
+      const reply: AnalysisReply = { type: 'frameError', reqId, message: (e as Error).message ?? String(e) };
+      port.postMessage(reply);
     }
   }
 
@@ -206,7 +280,7 @@ export class RenderServer {
         try {
           await this.renderJob(job);
         } catch (e) {
-          this.post({ type: 'renderError', id: job.id, key: job.key, message: (e as Error).message ?? String(e) });
+          if (!job.analysis) this.post({ type: 'renderError', id: job.id, key: job.key, message: (e as Error).message ?? String(e) });
         }
         await yieldLoop();
       }
@@ -216,6 +290,7 @@ export class RenderServer {
   }
 
   private async renderJob(job: Job): Promise<void> {
+    if (job.analysis) return this.renderAnalysis(job);
     const r = this.renderer;
     if (!r || !this.project) throw new Error('renderer not ready');
     const comp = this.project.comps[job.opts.compId];

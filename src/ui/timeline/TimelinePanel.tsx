@@ -22,6 +22,8 @@ import { keyframeContextMenu, layerContextMenu } from '../menus/layerMenu';
 import { TimeDisplay } from '../controls/TimeDisplay';
 import { GraphEditor } from './GraphEditor';
 import { scrubAt } from '../../audio/engine';
+import { useTracking, findTracker } from '../../state/tracking';
+import { rotoEffectOf } from '../../state/roto';
 
 export function TimelinePanel() {
   const comp = useActiveComp();
@@ -364,6 +366,7 @@ function Timeline({ comp }: { comp: Composition }) {
         <div className="tl-top-right">
           <Navigator comp={comp} tm={tm} trackW={trackW} />
           <Ruler comp={comp} tm={tm} trackW={trackW} />
+          <TrackStrip comp={comp} tm={tm} trackW={trackW} />
         </div>
       </div>
       <div className="tl-colhead">
@@ -730,6 +733,83 @@ function Ruler({ comp, tm, trackW }: { comp: Composition; tm: TimeMap; trackW: n
       }}
     />
   );
+}
+
+/** Tracking analysis strip: analysed frames coloured by confidence (or solve error), with a live head. */
+function TrackStrip({ comp, tm, trackW }: { comp: Composition; tm: TimeMap; trackW: number }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const job = useTracking((s) => (s.job?.compId === comp.id ? s.job : null));
+  const active = useTracking((s) => (s.active?.compId === comp.id ? s.active : null));
+  const project = useApp((s) => s.project);
+  const sel = useApp((s) => s.selLayers);
+  const segs = useMemo(() => {
+    const out: { t: number; c: number; kind: 'conf' | 'err' | 'roto' | 'user' }[] = [];
+    const fps = exactFps(comp.frameRate);
+    if (active) {
+      const f = findTracker(project, comp.id, active.layerId, active.trackerId);
+      if (f) {
+        const byT = new Map<number, number>();
+        for (const p of f.tracker.points) for (const k of p.confidence.keyframes) {
+          const t = Math.round(toCompTime(f.layer, k.t) * fps);
+          byT.set(t, Math.min(byT.get(t) ?? 100, k.v as number));
+        }
+        for (const [fr, c] of byT) out.push({ t: fr / fps, c, kind: 'conf' });
+      }
+    }
+    for (const l of comp.layers) {
+      if (!sel.includes(l.id)) continue;
+      const ct = l.cameraTrack;
+      if (ct?.solved) ct.frameError.forEach((e, i) => out.push({ t: toCompTime(l, ct.t0 + i * ct.dt), c: e < 0 ? 0 : Math.max(0, Math.min(100, 100 - (e - 0.4) * 60)), kind: 'err' }));
+      const r = rotoEffectOf(l, project);
+      if (r) {
+        const user = new Set(r.info.prompts.map((p) => p.frame));
+        for (const k of Object.keys(r.info.revs)) out.push({ t: toCompTime(l, Number(k) / r.info.fps), c: 100, kind: user.has(Number(k)) ? 'user' : 'roto' });
+      }
+    }
+    if (job) for (const smp of job.samples) out.push({ t: smp.t, c: smp.c, kind: job.op === 'roto' ? 'roto' : 'conf' });
+    return out;
+  }, [comp, project, sel, active, job]);
+  const visible = segs.length > 0 || !!job;
+  useEffect(() => {
+    const c = canvas.current;
+    if (!c || !visible) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = trackW, H = 7;
+    c.width = W * dpr;
+    c.height = H * dpr;
+    c.style.width = `${W}px`;
+    c.style.height = `${H}px`;
+    const ctx = c.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx.fillRect(0, 0, W, H);
+    const fd = frameDuration(comp.frameRate);
+    for (const sgm of segs) {
+      const x0 = tm.x(sgm.t), x1 = tm.x(sgm.t + fd);
+      if (x1 < 0 || x0 > W) continue;
+      let col: string;
+      if (sgm.kind === 'roto') col = 'rgba(255,79,163,0.75)';
+      else if (sgm.kind === 'user') col = '#ff8fcb';
+      else {
+        const k = Math.max(0, Math.min(1, (sgm.c - 50) / 50));
+        col = `rgb(${Math.round(255 - 175 * k)},${Math.round(80 + 150 * k)},${Math.round(90 + 20 * k)})`;
+      }
+      ctx.fillStyle = col;
+      ctx.fillRect(x0, 1, Math.max(1, x1 - x0 - (x1 - x0 > 3 ? 0.5 : 0)), H - 2);
+    }
+    if (job && job.samples.length) {
+      const last = job.samples[job.samples.length - 1];
+      const x = tm.x(last.t + (job.direction > 0 ? fd : 0));
+      ctx.shadowColor = 'rgba(255,255,255,0.9)';
+      ctx.shadowBlur = 6;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(x - 1, 0, 2, H);
+      ctx.shadowBlur = 0;
+    }
+  }, [segs, tm.pxPerSec, tm.scrollTime, trackW, comp.frameRate, job, visible, tm]);
+  if (!visible) return null;
+  return <canvas ref={canvas} className="tl-trackstrip" title="Tracking analysis — green = high confidence, red = low; pink = roto mattes" />;
 }
 
 function Navigator({ comp, tm, trackW }: { comp: Composition; tm: TimeMap; trackW: number }) {

@@ -7,6 +7,7 @@ import '@fontsource/jetbrains-mono/600.css';
 import './styles/app.css';
 import './styles/panels.css';
 import './styles/shell.css';
+import './styles/tracking.css';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
 import { loadDocumentFonts } from './fonts';
@@ -17,6 +18,7 @@ import { getApp, loadProject, openDialog, setApp } from './state/store';
 import { openComp } from './state/actions';
 import { setTime } from './state/time';
 import { buildDemoProject, ensureProceduralMedia } from './demo';
+import { restoreMattes } from './state/mattes';
 import { setBoot } from './ui/shell/Overlays';
 import { WELCOME_KEY } from './ui/shell/Dialogs';
 
@@ -41,6 +43,7 @@ async function boot(): Promise<void> {
     setBoot('Re-linking media…', 0.6);
     await restoreMedia(Object.values(saved.project.footage));
     await ensureProceduralMedia(saved.project);
+    await restoreMattes(saved.project);
   } else {
     setBoot('Building the demo scene…', 0.55);
     const { project, mainCompId, initialTime } = buildDemoProject();

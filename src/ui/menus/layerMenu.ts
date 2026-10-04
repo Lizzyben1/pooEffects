@@ -1,7 +1,7 @@
 // Context menus for layers and keyframes.
 
 import type { MenuItem } from '../../state/uiTypes';
-import { commands as C, MOD, SHIFT, ALT, newLayer } from '../commands';
+import { commands as C, MOD, SHIFT, ALT, newLayer, startTracking } from '../commands';
 import { getApp, openDialog, setApp } from '../../state/store';
 import type { BlendMode } from '../../core/types';
 import * as A from '../../state/actions';
@@ -113,6 +113,18 @@ export function layerContextMenu(compId: string, ids: string[]): MenuItem[] {
         { label: 'Freeze Frame', action: C.freezeFrame },
       ],
     },
+    ...(first.type === 'video' || first.type === 'image' || first.type === 'precomp'
+      ? [{
+        label: 'Tracking',
+        submenu: [
+          { label: 'Track Camera', action: () => startTracking('camera') },
+          { label: 'Track Motion', action: () => startTracking('transform') },
+          { label: 'Stabilize Motion', action: () => startTracking('stabilize') },
+          { label: 'Track Perspective Corner Pin', action: () => startTracking('perspective') },
+          { label: 'Roto Brush (SAM 2)', shortcut: `${ALT}W`, action: () => startTracking('roto') },
+        ],
+      }]
+      : []),
     { label: 'Pre-compose…', shortcut: `${MOD}${SHIFT}C`, action: C.precompose },
     { separator: true },
     { label: 'Rename', action: () => openDialog({ kind: 'rename', title: 'Rename Layer', value: first.name, onSubmit: (v) => A.setLayerFields(compId, [first.id], { name: v }) }) },

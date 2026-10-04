@@ -432,6 +432,22 @@ export const EFFECTS: EffectDef[] = [
       pct('spill', 'Spill Suppression', 50),
     ],
   },
+  {
+    type: 'rotoBrush', name: 'Roto Brush & Refine Edge', category: 'Keying',
+    description: 'AI (SAM 2) segmentation matte with GPU edge refinement. Paint prompts with the Roto Brush tool (Alt+W).',
+    params: [
+      { id: 'matte', name: 'Segmentation', kind: 'text', default: '', animatable: false, hidden: true },
+      choice('output', 'View', [['final', 'Foreground'], ['matte', 'Alpha Matte'], ['overlay', 'Boundary Overlay']], 'final'),
+      bool('invert', 'Invert Foreground/Background', false),
+      slider('feather', 'Feather', 1.5, 0, 30, { min: 0, max: 200, unit: 'px', group: 'Refine Matte' }),
+      pct('contrast', 'Contrast', 25, { group: 'Refine Matte' }),
+      slider('shiftEdge', 'Shift Edge', 0, -20, 20, { min: -100, max: 100, unit: 'px', group: 'Refine Matte' }),
+      pct('chatter', 'Reduce Chatter', 0, { group: 'Refine Matte' }),
+      bool('decontaminate', 'Decontaminate Edge Colors', true, { group: 'Edge Colors' }),
+      pct('decontamination', 'Decontamination Amount', 100, { group: 'Edge Colors' }),
+      slider('deconWidth', 'Decontamination Width', 6, 1, 30, { min: 0.5, max: 100, unit: 'px', group: 'Edge Colors' }),
+    ],
+  },
 
   // ── Noise & Grain ─────────────────────────────────────────────────────────
   {
