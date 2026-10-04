@@ -4,6 +4,9 @@
 import { ALL_FORMATS, BlobSource, Input, VideoSampleSink, type InputVideoTrack, type VideoSample } from 'mediabunny';
 import { inflateSync } from 'fflate';
 import type { AssetHost } from './renderer';
+import type { VideoDecodeStats } from './protocol';
+
+const newStats = (): VideoDecodeStats => ({ path: 'pending', codec: null, decoded: 0, decodeMs: 0, seeks: 0, hits: 0, reason: null, accel: 'auto' });
 
 interface DecodedFrame {
   frame: VideoFrame | ImageBitmap;
@@ -14,7 +17,25 @@ interface DecodedFrame {
   h: number;
 }
 
-/** Sequential-friendly frame access for one video file. */
+/** Raced against a decoder call: resolves to null after `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([p, new Promise<null>((res) => (timer = setTimeout(() => res(null), ms)))]).finally(() => clearTimeout(timer));
+}
+
+/** How long a single decoder step may take before the stream is considered stalled. */
+const STALL_MS = 4000;
+const FRAME_CACHE = 12;
+
+/**
+ * Sequential-friendly frame access for one video file (WebCodecs via mediabunny).
+ *
+ * Decoder-owned VideoFrames are copied to ImageBitmaps and closed immediately: hardware decoders
+ * (e.g. D3D11 on Windows) have a small fixed pool of output surfaces, and retaining decoded frames
+ * starves that pool — decode() then stalls and every render waiting on it hangs.
+ * Requests are serialised (one shared iterator), and a watchdog turns a stalled decoder into a
+ * fallback instead of a hang.
+ */
 class VideoStream {
   private input: Input | null = null;
   private track: InputVideoTrack | null = null;
@@ -22,24 +43,57 @@ class VideoStream {
   private iter: AsyncGenerator<VideoSample, void, unknown> | null = null;
   private lastStart = -1;
   private cache: DecodedFrame[] = [];
+  private queue: Promise<unknown> = Promise.resolve();
+  private stalls = 0;
   failed = false;
   ready: Promise<void>;
   readonly id: string;
+  readonly stats: VideoDecodeStats = newStats();
 
-  constructor(id: string, blob: Blob) {
+  constructor(id: string, blob: Blob, preferSoftware = false) {
     this.id = id;
+    this.stats.accel = preferSoftware ? 'software' : 'auto';
     this.ready = this.open(blob);
+  }
+
+  private makeSink(): VideoSampleSink {
+    return new VideoSampleSink(this.track!, this.stats.accel === 'software' ? { hardwareAcceleration: 'prefer-software' } : undefined);
+  }
+
+  /** Switch to (or away from) the software decoder; restarts the decode iterator. */
+  setSoftware(on: boolean): void {
+    const want = on ? 'software' : 'auto';
+    if (this.stats.accel === want || !this.track) return;
+    this.stats.accel = want;
+    this.resetIter();
+    if (this.failed && this.stats.reason?.includes('stalled')) {
+      this.failed = false;
+      this.stats.path = 'webcodecs';
+      this.stats.reason = null;
+      this.stalls = 0;
+    }
+    if (!this.failed) this.sink = this.makeSink();
   }
 
   private async open(blob: Blob): Promise<void> {
     try {
       this.input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
       this.track = await this.input.getPrimaryVideoTrack();
-      if (!this.track || !(await this.track.canDecode())) throw new Error('video track not decodable');
-      this.sink = new VideoSampleSink(this.track);
-    } catch {
-      this.failed = true;
+      if (!this.track) throw new Error('no video track');
+      this.stats.codec = (await this.track.getCodecParameterString().catch(() => null)) ?? this.track.codec ?? null;
+      if (!(await this.track.canDecode())) throw new Error(`this browser cannot decode ${this.track.codec ?? 'this codec'} with WebCodecs`);
+      this.sink = this.makeSink();
+      this.stats.path = 'webcodecs';
+    } catch (e) {
+      this.fail((e as Error).message ?? String(e));
     }
+  }
+
+  private fail(reason: string): void {
+    this.failed = true;
+    this.stats.path = 'failed';
+    this.stats.reason = reason;
+    this.resetIter();
   }
 
   cached(t: number): DecodedFrame | null {
@@ -47,44 +101,66 @@ class VideoStream {
     return null;
   }
 
-  private store(sample: VideoSample): DecodedFrame {
+  /** Copy the sample into an ImageBitmap and release the decoder's surface right away. */
+  private async store(sample: VideoSample): Promise<DecodedFrame> {
+    const start = sample.timestamp;
+    const end = sample.timestamp + Math.max(1e-3, sample.duration || 1 / 30);
+    let frame: VideoFrame | ImageBitmap;
     const vf = sample.toVideoFrame();
-    const d: DecodedFrame = {
-      frame: vf,
-      start: sample.timestamp,
-      end: sample.timestamp + Math.max(1e-3, sample.duration || 1 / 30),
-      key: `${this.id}@${sample.timestamp.toFixed(6)}`,
-      w: vf.displayWidth,
-      h: vf.displayHeight,
-    };
     sample.close();
-    this.cache.push(d);
-    while (this.cache.length > 10) {
-      const old = this.cache.shift()!;
-      old.frame.close();
+    try {
+      frame = await createImageBitmap(vf);
+      vf.close();
+    } catch {
+      // createImageBitmap(VideoFrame) unsupported: keep the frame (cache is small)
+      frame = vf;
     }
+    const d: DecodedFrame = {
+      frame, start, end, key: `${this.id}@${start.toFixed(6)}`,
+      w: (frame as ImageBitmap).width ?? (frame as VideoFrame).displayWidth, h: (frame as ImageBitmap).height ?? (frame as VideoFrame).displayHeight,
+    };
+    this.cache.push(d);
+    while (this.cache.length > FRAME_CACHE) this.cache.shift()!.frame.close();
     return d;
   }
 
   private resetIter(): void {
-    if (this.iter) void this.iter.return(undefined);
+    if (this.iter) void this.iter.return(undefined).catch(() => {});
     this.iter = null;
   }
 
-  async frameAt(t: number): Promise<DecodedFrame | null> {
+  /** Decoded frame covering footage time t. Calls are serialised on this stream. */
+  frameAt(t: number): Promise<DecodedFrame | null> {
+    const run = this.queue.then(() => this.decodeAt(t));
+    this.queue = run.catch(() => null);
+    return run;
+  }
+
+  private async decodeAt(t: number): Promise<DecodedFrame | null> {
     await this.ready;
     if (this.failed || !this.sink) return null;
     const hit = this.cached(t);
-    if (hit) return hit;
+    if (hit) {
+      this.stats.hits++;
+      return hit;
+    }
+    const t0 = performance.now();
+    const done = (d: DecodedFrame | null) => {
+      this.stats.decoded++;
+      this.stats.decodeMs += performance.now() - t0;
+      return d;
+    };
     try {
       const forward = this.iter && t >= this.lastStart && t - this.lastStart < 1.5;
       if (!forward) {
         this.resetIter();
+        this.stats.seeks++;
         this.iter = this.sink.samples(Math.max(0, t - 1e-3));
       }
       let prev: VideoSample | null = null;
       for (let guard = 0; guard < 900; guard++) {
-        const r = await this.iter!.next();
+        const r = await withTimeout(this.iter!.next(), STALL_MS);
+        if (r === null) throw new Error('decoder stalled');
         if (r.done) break;
         const s = r.value;
         const end = s.timestamp + Math.max(1e-3, s.duration || 1 / 30);
@@ -95,18 +171,32 @@ class VideoStream {
           continue;
         }
         prev?.close();
-        return this.store(s);
+        this.stalls = 0;
+        return done(await this.store(s));
       }
       // requested time is past the last frame: hold the final frame
-      if (prev) return this.store(prev);
+      if (prev) return done(await this.store(prev));
       return this.cache[this.cache.length - 1] ?? null;
-    } catch {
+    } catch (e) {
       this.resetIter();
+      if ((e as Error).message === 'decoder stalled' && ++this.stalls >= 2) {
+        if (this.stats.accel === 'auto') {
+          // a hardware decoder that stops producing frames (seen with H.264 on some AMD/D3D11 drivers):
+          // retry with the software decoder before giving up on WebCodecs
+          this.stats.accel = 'software';
+          this.stats.reason = `hardware decoder stalled (${this.stats.codec ?? 'video'}) — switched to software decoding`;
+          this.stalls = 0;
+          this.sink = this.makeSink();
+          return this.decodeAt(t);
+        }
+        this.fail(`WebCodecs decoder stalled (${this.stats.codec ?? 'video'})`);
+        return null;
+      }
       try {
-        const s = await this.sink.getSample(t);
-        return s ? this.store(s) : null;
-      } catch {
-        this.failed = true;
+        const s = await withTimeout(this.sink.getSample(t), STALL_MS);
+        return s ? done(await this.store(s)) : null;
+      } catch (err) {
+        this.fail((err as Error).message ?? 'decode error');
         return null;
       }
     }
@@ -130,6 +220,8 @@ export class WorkerAssets implements AssetHost {
   private fallbackFrames = new Map<string, DecodedFrame[]>();
   private audio = new Map<string, { mono: Float32Array; sampleRate: number }>();
   private requestFallback: FallbackFrameRequester;
+  private fallbackStats = new Map<string, VideoDecodeStats>();
+  private fallbackAttempts = new Map<string, number>();
   /** roto matte revisions: deflated planes + a small cache of inflated ones */
   private mattes = new Map<string, Map<number, { w: number; h: number; data: Uint8Array }>>();
   private inflated = new Map<string, Uint8Array>();
@@ -143,9 +235,16 @@ export class WorkerAssets implements AssetHost {
     this.images.set(id, bmp);
   }
 
+  private preferSoftware = false;
+
   setVideo(id: string, blob: Blob): void {
     this.videos.get(id)?.dispose();
-    this.videos.set(id, new VideoStream(id, blob));
+    this.videos.set(id, new VideoStream(id, blob, this.preferSoftware));
+  }
+
+  setPreferSoftware(on: boolean): void {
+    this.preferSoftware = on;
+    for (const v of this.videos.values()) v.setSoftware(on);
   }
 
   setAudio(id: string, channels: Float32Array[], sampleRate: number): void {
@@ -209,7 +308,8 @@ export class WorkerAssets implements AssetHost {
     const jobs: Promise<unknown>[] = [];
     for (const [id, times] of needs) {
       const v = this.videos.get(id);
-      for (const t of times) {
+      // ascending order keeps the shared decode iterator moving forward (motion-blur sub-frames, duplicates)
+      for (const t of [...new Set(times)].sort((a, b) => a - b)) {
         if (v && !v.failed) {
           jobs.push(v.frameAt(t).then((r) => (r ? r : this.fallback(id, t))));
         } else jobs.push(this.fallback(id, t));
@@ -223,13 +323,33 @@ export class WorkerAssets implements AssetHost {
     const fd = 1 / 120;
     const hit = list.find((f) => Math.abs(f.start - t) < fd);
     if (hit) return hit;
+    let st = this.fallbackStats.get(id);
+    if (!st) this.fallbackStats.set(id, (st = newStats()));
+    const t0 = performance.now();
     const bmp = await this.requestFallback(id, t);
+    this.fallbackAttempts.set(id, (this.fallbackAttempts.get(id) ?? 0) + 1);
     if (!bmp) return null;
+    st.decoded++;
+    st.decodeMs += performance.now() - t0;
     const d: DecodedFrame = { frame: bmp, start: t, end: t + fd, key: `${id}@fb${t.toFixed(5)}`, w: bmp.width, h: bmp.height };
     list.push(d);
     while (list.length > 6) list.shift()!.frame.close();
     this.fallbackFrames.set(id, list);
     return d;
+  }
+
+  /** Decode statistics per video footage (WebCodecs stream, or the <video> fallback when it failed). */
+  videoStats(): Record<string, VideoDecodeStats> {
+    const out: Record<string, VideoDecodeStats> = {};
+    for (const [id, v] of this.videos) {
+      const fb = this.fallbackStats.get(id);
+      const attempts = this.fallbackAttempts.get(id) ?? 0;
+      if (!v.failed) out[id] = { ...v.stats };
+      else if (fb && fb.decoded > 0) out[id] = { ...fb, path: 'fallback', codec: v.stats.codec, reason: v.stats.reason };
+      else if (attempts > 0) out[id] = { ...v.stats, path: 'failed', reason: `${v.stats.reason ?? 'WebCodecs unavailable'}; the <video> element can't play it either` };
+      else out[id] = { ...v.stats };
+    }
+    return out;
   }
 
   videoFrame(id: string, t: number): { frame: TexImageSource; key: string; w: number; h: number } | null {

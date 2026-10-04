@@ -2,7 +2,7 @@
 // WebGL2 on an OffscreenCanvas inside a worker, transparently falls back to an inline server.
 
 import type { Project, RGBA } from '../core/types';
-import type { ExportJob, FontSpec, FromWorker, RenderPurpose, ToWorker, WorkerCaps } from './protocol';
+import type { ExportJob, FontSpec, FromWorker, RenderPurpose, ToWorker, VideoDecodeStats, WorkerCaps } from './protocol';
 import type { RenderOptions } from './renderer';
 import type { RenderServer } from './server';
 
@@ -44,9 +44,10 @@ export class RenderHost {
   mode: 'worker' | 'inline' = 'worker';
   /** Called after a server restart so the media store can re-send assets. */
   onRestart: () => void = () => {};
-  onVideoFrameRequest: (footageId: string, time: number) => Promise<ImageBitmap | null> = async () => null;
+  onVideoFrameRequest: (footageId: string, time: number, fps: number) => Promise<ImageBitmap | null> = async () => null;
   onLog: (level: string, message: string) => void = (l, m) => console[l === 'error' ? 'error' : 'warn'](`[render] ${m}`);
   onErrors: (errors: [string, string][]) => void = () => {};
+  onMediaStats: (stats: Record<string, VideoDecodeStats>) => void = () => {};
 
   constructor(fonts: FontSpec[]) {
     this.fonts = fonts;
@@ -140,7 +141,7 @@ export class RenderHost {
         }
         break;
       case 'needVideoFrame':
-        void this.onVideoFrameRequest(m.footageId, m.time).then((bitmap) => {
+        void this.onVideoFrameRequest(m.footageId, m.time, m.fps).then((bitmap) => {
           this.post({ type: 'videoFrameReply', reqId: m.reqId, bitmap }, bitmap ? [bitmap] : []);
         });
         break;
@@ -164,6 +165,9 @@ export class RenderHost {
       }
       case 'log':
         this.onLog(m.level, m.message);
+        break;
+      case 'mediaStats':
+        this.onMediaStats(m.stats);
         break;
     }
   }

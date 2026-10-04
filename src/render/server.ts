@@ -58,12 +58,12 @@ export class RenderServer {
       const timer = setTimeout(() => {
         this.fallbackReqs.delete(reqId);
         resolve(null);
-      }, 4000);
+      }, 6000);
       this.fallbackReqs.set(reqId, (b) => {
         clearTimeout(timer);
         resolve(b);
       });
-      this.post({ type: 'needVideoFrame', reqId, footageId, time });
+      this.post({ type: 'needVideoFrame', reqId, footageId, time, fps: this.project?.footage[footageId]?.frameRate ?? 30 });
     });
   }
 
@@ -199,6 +199,9 @@ export class RenderServer {
       case 'dropMatte':
         this.assets.dropMatte(msg.id, msg.revs);
         break;
+      case 'videoDecodePrefs':
+        this.assets.setPreferSoftware(msg.preferSoftware);
+        break;
     }
   }
 
@@ -289,6 +292,17 @@ export class RenderServer {
     }
   }
 
+  private lastStatsPost = 0;
+
+  /** Throttled decode-stats report for the status bar. */
+  private postMediaStats(): void {
+    const now = Date.now();
+    if (now - this.lastStatsPost < 500) return;
+    this.lastStatsPost = now;
+    const stats = this.assets.videoStats();
+    if (Object.keys(stats).length) this.post({ type: 'mediaStats', stats });
+  }
+
   private async renderJob(job: Job): Promise<void> {
     if (job.analysis) return this.renderAnalysis(job);
     const r = this.renderer;
@@ -297,7 +311,10 @@ export class RenderServer {
     if (!comp) throw new Error('composition not found');
     const needs = new Map<string, number[]>();
     collectVideoNeeds(this.project, comp, job.opts.time, needs);
-    if (needs.size) await this.assets.prepare(needs);
+    if (needs.size) {
+      await this.assets.prepare(needs);
+      this.postMediaStats();
+    }
     r.setProject(this.project);
     let opts = job.opts;
     if (job.maxSize) opts = { ...opts, scale: Math.min(opts.scale, job.maxSize / Math.max(comp.width, comp.height)) };

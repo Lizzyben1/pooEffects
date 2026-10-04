@@ -236,6 +236,12 @@ buffers. The UI never freezes. Open the **Tracker** panel (or the *Motion Tracki
 - Import video, images, audio and fonts (`.ttf`, `.otf`, `.woff`, `.woff2`) with the file picker or by dropping files
   anywhere.
 - Video is decoded frame-accurately with WebCodecs and demuxed by mediabunny.
+  - Decoded frames are copied to ImageBitmaps and closed immediately, so hardware decoders aren't starved of
+    surfaces.
+  - A decoder that stalls switches itself to software decoding. *Preferences → Video decoding* forces software
+    decoding from the start, which helps with some AMD H.264 drivers.
+  - Clips WebCodecs can't open fall back to a sequential `<video>` reader that uses `requestVideoFrameCallback`.
+  - A status-bar indicator shows the decode path and the average decode time per frame. Hover it for details.
 - **Auto-save:** the project and its media persist in IndexedDB.
 - **Save / Open:** a `.pooe` file is a ZIP holding `project.json`, the media and the roto mattes.
 - Undo / redo covers every edit. Drags and scrubs count as single undo steps.

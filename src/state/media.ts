@@ -35,7 +35,7 @@ function emit(): void {
 
 export function attachHost(h: RenderHost): void {
   host = h;
-  h.onVideoFrameRequest = (id, t) => fallbackFrame(id, t);
+  h.onVideoFrameRequest = (id, t, fps) => fallbackFrame(id, t, fps);
   h.onRestart = () => {
     for (const [id, e] of entries) void sendToHost(id, e);
     void import('./mattes').then((m) => m.resendMattes());
@@ -135,7 +135,7 @@ async function decodeAudio(blob: Blob): Promise<AudioBuffer | undefined> {
   }
 }
 
-async function videoThumb(url: string, t = 0.1): Promise<{ thumb: string; w: number; h: number; duration: number; video: HTMLVideoElement } | null> {
+async function videoThumb(url: string, t = 0): Promise<{ thumb: string; w: number; h: number; duration: number; video: HTMLVideoElement } | null> {
   const v = document.createElement('video');
   v.muted = true;
   v.playsInline = true;
@@ -176,20 +176,125 @@ function seekVideo(v: HTMLVideoElement, t: number): Promise<void> {
   });
 }
 
-async function fallbackFrame(id: string, t: number): Promise<ImageBitmap | null> {
+/**
+ * <video>-element frame source for footage WebCodecs can't decode. Sequential requests (caching,
+ * playback, export) are served by letting the element play and capturing every presented frame with
+ * requestVideoFrameCallback into a small ring buffer — about real-time, instead of one seek per frame.
+ * Backward or far requests seek. A file the element can't play either is detected once.
+ */
+class FallbackReader {
+  private v: HTMLVideoElement | null = null;
+  private loading: Promise<HTMLVideoElement | null> | null = null;
+  private frames: { t: number; bmp: ImageBitmap }[] = [];
+  private waiters: { t: number; resolve: () => void }[] = [];
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private fd = 1 / 30;
+  unplayable = false;
+
+  constructor(private url: string, existing?: HTMLVideoElement) {
+    if (existing) this.v = existing;
+  }
+
+  private async element(): Promise<HTMLVideoElement | null> {
+    if (this.v) return this.v;
+    if (this.unplayable) return null;
+    if (!this.loading) {
+      this.loading = videoThumb(this.url).then((r) => {
+        if (!r) this.unplayable = true;
+        this.v = r?.video ?? null;
+        return this.v;
+      });
+    }
+    return this.loading;
+  }
+
+  private find(t: number): ImageBitmap | null {
+    // the latest captured frame at or before t, if it is still current at t
+    let best: { t: number; bmp: ImageBitmap } | null = null;
+    for (const f of this.frames) if (f.t <= t + 1e-3 && (!best || f.t > best.t)) best = f;
+    return best && t - best.t < this.fd * 1.5 ? best.bmp : null;
+  }
+
+  private push(t: number, bmp: ImageBitmap): void {
+    this.frames.push({ t, bmp });
+    this.frames.sort((a, b) => a.t - b.t);
+    while (this.frames.length > 16) this.frames.shift()!.bmp.close();
+    this.waiters = this.waiters.filter((w) => {
+      if (this.find(w.t)) {
+        w.resolve();
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private startCapture(v: HTMLVideoElement): void {
+    const vf = v as HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number };
+    if (!vf.requestVideoFrameCallback) return;
+    const onFrame = (_now: number, meta: { mediaTime: number }) => {
+      if (v.paused) return;
+      void createImageBitmap(v).then((bmp) => this.push(meta.mediaTime, bmp)).catch(() => {});
+      // stay a little ahead of the newest request, then idle
+      const newest = this.waiters.reduce((m, w) => Math.max(m, w.t), -1);
+      if (newest >= 0 || meta.mediaTime < this.lastRequest + 0.5) vf.requestVideoFrameCallback!(onFrame);
+      else v.pause();
+    };
+    vf.requestVideoFrameCallback(onFrame);
+    v.muted = true;
+    void v.play().catch(() => {});
+  }
+
+  private lastRequest = -1;
+
+  async frame(t: number, fps: number): Promise<ImageBitmap | null> {
+    this.fd = 1 / Math.max(1, fps || 30);
+    const v = await this.element();
+    if (!v) return null;
+    this.lastRequest = t;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => v.pause(), 700);
+    let hit = this.find(t);
+    if (hit) return createImageBitmap(hit);
+    const sequential = 'requestVideoFrameCallback' in v && t >= v.currentTime - this.fd && t - v.currentTime < 1.5 && !v.ended;
+    if (sequential) {
+      if (v.paused) this.startCapture(v);
+      await new Promise<void>((resolve) => {
+        const w = { t, resolve };
+        this.waiters.push(w);
+        setTimeout(() => {
+          this.waiters = this.waiters.filter((x) => x !== w);
+          resolve();
+        }, 1500);
+      });
+      hit = this.find(t);
+      if (hit) return createImageBitmap(hit);
+    }
+    // jump (or the sequential capture missed the frame): seek and grab
+    v.pause();
+    await seekVideo(v, t);
+    try {
+      const bmp = await createImageBitmap(v);
+      this.push(v.currentTime, await createImageBitmap(bmp));
+      return bmp;
+    } catch {
+      return null;
+    }
+  }
+}
+
+const readers = new Map<string, FallbackReader>();
+
+async function fallbackFrame(id: string, t: number, fps: number): Promise<ImageBitmap | null> {
   const e = entries.get(id);
   if (!e) return null;
-  if (!e.video) {
-    const r = await videoThumb(e.url);
-    if (!r) return null;
-    e.video = r.video;
-  }
-  await seekVideo(e.video, t);
-  try {
-    return await createImageBitmap(e.video);
-  } catch {
-    return null;
-  }
+  let r = readers.get(id);
+  if (!r) readers.set(id, (r = new FallbackReader(e.url, e.video)));
+  return r.frame(t, fps);
+}
+
+/** True when neither WebCodecs (reported by the worker) nor the <video> element can play this file. */
+export function isUnplayable(id: string): boolean {
+  return readers.get(id)?.unplayable ?? false;
 }
 
 async function imageThumb(bmp: ImageBitmap): Promise<string> {
@@ -205,6 +310,7 @@ async function imageThumb(bmp: ImageBitmap): Promise<string> {
 export async function registerMedia(id: string, blob: Blob, persist = true): Promise<MediaEntry> {
   const old = entries.get(id);
   if (old) URL.revokeObjectURL(old.url);
+  readers.delete(id);
   const e: MediaEntry = { blob, url: URL.createObjectURL(blob) };
   const type = blob.type || '';
   const name = (blob as File).name ?? '';

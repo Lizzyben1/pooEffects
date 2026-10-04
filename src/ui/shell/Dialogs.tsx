@@ -542,7 +542,7 @@ function PrefsDialog() {
   return (
     <Dialog title="Preferences" icon={<Settings2 size={17} style={{ color: 'var(--accent)' }} />} onClose={closeDialog} width={580} footer={<>
       <button className="btn ghost" onClick={() => {
-        set({ cacheBudgetMB: 1536, backgroundRender: true, audioScrub: true, autoSave: true, showSplash: true, highlightColor: '#ff9b3f', timelineLabelBars: true });
+        set({ cacheBudgetMB: 1536, backgroundRender: true, audioScrub: true, autoSave: true, showSplash: true, highlightColor: '#ff9b3f', timelineLabelBars: true, softwareVideoDecode: false });
         toast('Preferences reset', 'info', 1500);
       }}>Reset to Defaults</button>
       <div style={{ flex: 1 }} />
@@ -558,6 +558,9 @@ function PrefsDialog() {
           <button className="btn sm" onClick={() => { clearCache(); toast('RAM cache purged', 'info', 1500); }}>Purge</button>
         </Row>
         <Row label="Background caching"><Toggle on={prefs.backgroundRender} onChange={(v) => set({ backgroundRender: v })}>Render the work area into the cache while idle</Toggle></Row>
+        <Row label="Video decoding" hint="use if footage stalls with GPU decoding (seen with H.264 on some AMD drivers)">
+          <Toggle on={prefs.softwareVideoDecode} onChange={(v) => set({ softwareVideoDecode: v })}>Prefer software decoding</Toggle>
+        </Row>
       </div>
       <div className="section-label">Audio</div>
       <div className="form-grid">
