@@ -1028,3 +1028,23 @@
   line-height: 1.5;
   color: var(--text-3);
 }
+
+/* video decode path indicator */
+.sb-decode .dot {
+  background: #3ddc84;
+}
+.sb-decode.pending .dot {
+  background: var(--text-3);
+}
+.sb-decode.fallback {
+  color: #ffc46b;
+}
+.sb-decode.fallback .dot {
+  background: #ffc46b;
+}
+.sb-decode.failed {
+  color: #ff8a95;
+}
+.sb-decode.failed .dot {
+  background: #ff5d6c;
+}

@@ -55,6 +55,8 @@ export interface AppState {
   exprErrors: Record<string, string>;
   cacheVersion: number;
   renderStats: { ms: number; layers: number; fps: number };
+  /** video decode path & timing per footage id (from the render worker) */
+  mediaStats: Record<string, import('../render/protocol').VideoDecodeStats>;
   info: { x?: number; y?: number; rgba?: number[] };
   booted: boolean;
 }
@@ -69,6 +71,7 @@ const DEFAULT_PREFS: Preferences = {
   showSplash: true,
   highlightColor: '#ff9b3f',
   timelineLabelBars: true,
+  softwareVideoDecode: false,
 };
 
 function loadPrefs(): Preferences {
@@ -119,6 +122,7 @@ export const useApp = create<AppState>()(() => ({
   exprErrors: {},
   cacheVersion: 0,
   renderStats: { ms: 0, layers: 0, fps: 0 },
+  mediaStats: {},
   info: {},
   booted: false,
 }));

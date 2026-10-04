@@ -5,7 +5,7 @@ import { RenderHost, type FrameResult } from '../render/host';
 import type { RenderOptions, ViewSpec } from '../render/renderer';
 import { BUNDLED_FONTS } from '../fonts';
 import { attachHost } from './media';
-import { getApp, setApp, useApp } from './store';
+import { getApp, setApp, toast, useApp } from './store';
 import * as cache from './cache';
 import { getTime, timeStore } from './time';
 import { exactFps, timeToFrame } from '../core/time';
@@ -136,6 +136,7 @@ export function cancelBackground(): void {
 // ── startup ─────────────────────────────────────────────────────────────────
 
 let started = false;
+const warnedDecode = new Set<string>();
 
 export function startEngine(): Promise<unknown> {
   if (started) return host.ready;
@@ -148,10 +149,35 @@ export function startEngine(): Promise<unknown> {
     const same = Object.keys(map).length === Object.keys(cur).length && Object.entries(map).every(([k, v]) => cur[k] === v);
     if (!same) setApp({ exprErrors: map });
   };
+  host.onMediaStats = (stats) => {
+    setApp({ mediaStats: stats });
+    // tell the user once per clip when decoding degrades — silent black or crawling frames are worse
+    for (const [id, st] of Object.entries(stats)) {
+      if (st.path === 'webcodecs' && st.accel === 'software' && st.reason && !warnedDecode.has(`${id}:sw`)) {
+        warnedDecode.add(`${id}:sw`);
+        toast(`“${getApp().project.footage[id]?.name ?? 'Video'}”: ${st.reason}`, 'warn', 7000);
+      }
+      if (st.path !== 'fallback' && st.path !== 'failed') continue;
+      const key = `${id}:${st.path}`;
+      if (warnedDecode.has(key)) continue;
+      warnedDecode.add(key);
+      const name = getApp().project.footage[id]?.name ?? 'Video';
+      if (st.path === 'fallback') toast(`“${name}”: ${st.reason ?? 'WebCodecs unavailable'} — using the slower <video> fallback`, 'warn', 7000);
+      else toast(`“${name}” can't be decoded by this browser (${st.codec ?? 'unknown codec'}). Transcode it to H.264, VP9 or AV1.`, 'error', 9000);
+    }
+  };
+  const sendDecodePrefs = () => host.post({ type: 'videoDecodePrefs', preferSoftware: getApp().prefs.softwareVideoDecode });
+  const assetRestart = host.onRestart;
+  host.onRestart = () => {
+    sendDecodePrefs();
+    assetRestart();
+  };
   host.start();
+  sendDecodePrefs();
   host.setProject(getApp().project);
   let lastProject: Project = getApp().project;
-  useApp.subscribe((s) => {
+  useApp.subscribe((s, prev) => {
+    if (s.prefs.softwareVideoDecode !== prev.prefs.softwareVideoDecode) sendDecodePrefs();
     if (s.project === lastProject) return;
     lastProject = s.project;
     host.setProject(s.project);

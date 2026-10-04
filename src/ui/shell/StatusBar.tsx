@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Cpu, HardDrive, MemoryStick, MousePointerClick } from 'lucide-react';
+import { Cpu, Film, HardDrive, MemoryStick, MousePointerClick } from 'lucide-react';
+import type { Composition, Project } from '../../core/types';
+import type { VideoDecodeStats } from '../../render/protocol';
 import { useActiveComp, useApp } from '../../state/store';
 import { host } from '../../state/engine';
 import { stats as cacheStats } from '../../state/cache';
@@ -43,6 +45,8 @@ export function StatusBar() {
       alive = false;
     };
   }, []);
+  const mediaStats = useApp((s) => s.mediaStats);
+  const decode = comp ? decodeSummary(project, comp, mediaStats) : null;
   const cs = cacheStats();
   const hint = tool === 'camera' ? CAMERA_HINTS[cameraTool] : TOOL_HINTS[tool];
   return (
@@ -65,6 +69,13 @@ export function StatusBar() {
       )}
       <span className="sb-hint"><MousePointerClick size={11} /> {hint}</span>
       <span className="grow" />
+      {decode && (
+        <span className={`sb-item sb-decode ${decode.path}`} title={decode.tooltip}>
+          <span className="dot" />
+          <Film size={11} />
+          {decode.label}
+        </span>
+      )}
       <span className="sb-item" title="RAM preview cache">
         <MemoryStick size={11} />
         {cs.mb.toFixed(0)} / {cs.budgetMb} MB · {cs.frames} fr
@@ -80,4 +91,46 @@ export function StatusBar() {
       </span>
     </footer>
   );
+}
+
+/** Video footage used by a comp (including nested precomps). */
+function videoFootageIn(project: Project, comp: Composition, out = new Set<string>(), seen = new Set<string>()): Set<string> {
+  if (seen.has(comp.id)) return out;
+  seen.add(comp.id);
+  for (const l of comp.layers) {
+    const fid = l.source?.footageId;
+    if (l.type === 'video' && fid && project.footage[fid]?.hasVideo) out.add(fid);
+    const nested = l.source?.compId ? project.comps[l.source.compId] : undefined;
+    if (nested) videoFootageIn(project, nested, out, seen);
+  }
+  return out;
+}
+
+const PATH_LABEL: Record<VideoDecodeStats['path'], string> = { pending: 'Opening', webcodecs: 'WebCodecs', fallback: '<video> fallback', failed: 'Undecodable' };
+const PATH_RANK: Record<VideoDecodeStats['path'], number> = { webcodecs: 0, pending: 1, fallback: 2, failed: 3 };
+
+/** Worst decode path among the comp's videos, with the average decode time of the busiest stream. */
+function decodeSummary(project: Project, comp: Composition, stats: Record<string, VideoDecodeStats>): { path: VideoDecodeStats['path']; label: string; tooltip: string } | null {
+  const ids = [...videoFootageIn(project, comp)];
+  if (!ids.length) return null;
+  let worst: VideoDecodeStats['path'] = 'webcodecs';
+  let decoded = 0, ms = 0;
+  const lines: string[] = [];
+  for (const id of ids) {
+    const st = stats[id];
+    const name = project.footage[id]?.name ?? id;
+    if (!st) {
+      lines.push(`${name}: waiting for first decode`);
+      if (PATH_RANK.pending > PATH_RANK[worst]) worst = 'pending';
+      continue;
+    }
+    if (PATH_RANK[st.path] > PATH_RANK[worst]) worst = st.path;
+    decoded += st.decoded;
+    ms += st.decodeMs;
+    const avg = st.decoded ? (st.decodeMs / st.decoded).toFixed(1) : '–';
+    lines.push(`${name}: ${PATH_LABEL[st.path]}${st.path === 'webcodecs' ? (st.accel === 'software' ? ' (software)' : ' (GPU allowed)') : ''}${st.codec ? ` · ${st.codec}` : ''} · ${avg} ms/frame · ${st.decoded} decoded · ${st.hits} cache hits · ${st.seeks} seeks${st.reason ? `\n   ${st.reason}` : ''}`);
+  }
+  const avg = decoded ? ms / decoded : 0;
+  const label = worst === 'failed' ? 'Video: undecodable' : `${PATH_LABEL[worst]}${decoded ? ` · ${avg.toFixed(1)} ms` : ''}`;
+  return { path: worst, label, tooltip: `Video decode path\n${lines.join('\n')}` };
 }

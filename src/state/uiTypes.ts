@@ -124,4 +124,6 @@ export interface Preferences {
   showSplash: boolean;
   highlightColor: string;
   timelineLabelBars: boolean;
+  /** decode video with the software decoder (workaround for hardware-decoder stalls) */
+  softwareVideoDecode: boolean;
 }

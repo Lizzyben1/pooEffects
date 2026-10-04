@@ -46,7 +46,9 @@ export type ToWorker =
   | { type: 'analysisPort'; port: MessagePort }
   /** roto matte revision, deflate-compressed 8-bit alpha */
   | { type: 'matte'; id: string; rev: number; w: number; h: number; data: Uint8Array }
-  | { type: 'dropMatte'; id: string; revs?: number[] };
+  | { type: 'dropMatte'; id: string; revs?: number[] }
+  /** decode every video with the software decoder (works around hardware-decoder stalls) */
+  | { type: 'videoDecodePrefs'; preferSoftware: boolean };
 
 export interface WorkerCaps {
   webgl2: boolean;
@@ -56,14 +58,33 @@ export interface WorkerCaps {
   offscreen: boolean;
 }
 
+/** Per-footage video decode statistics (worker → UI, throttled). */
+export interface VideoDecodeStats {
+  /** 'pending' until the demuxer has opened the file */
+  path: 'pending' | 'webcodecs' | 'fallback' | 'failed';
+  codec: string | null;
+  /** frames decoded (WebCodecs) or grabbed (fallback) */
+  decoded: number;
+  /** total decode time for those frames, ms */
+  decodeMs: number;
+  /** iterator restarts (each costs a decode from the previous keyframe) */
+  seeks: number;
+  /** requests served from the decoded-frame cache */
+  hits: number;
+  reason: string | null;
+  /** 'auto' lets the browser use the GPU decoder; 'software' after a hardware stall or by preference */
+  accel: 'auto' | 'software';
+}
+
 export type FromWorker =
   | { type: 'ready'; caps: WorkerCaps }
   | { type: 'fatal'; message: string }
   | { type: 'frame'; id: number; key: string; purpose: RenderPurpose; bitmap: ImageBitmap; ms: number; layers: number; errors: [string, string][]; time: number; compId: string }
   | { type: 'renderError'; id: number; key: string; message: string }
   | { type: 'cancelled'; ids: number[] }
-  | { type: 'needVideoFrame'; reqId: number; footageId: string; time: number }
+  | { type: 'needVideoFrame'; reqId: number; footageId: string; time: number; fps: number }
   | { type: 'exportProgress'; jobId: string; frame: number; total: number; preview: ImageBitmap | null; fps: number }
   | { type: 'exportDone'; jobId: string; blob: Blob; filename: string }
   | { type: 'exportError'; jobId: string; message: string }
-  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
+  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
+  | { type: 'mediaStats'; stats: Record<string, VideoDecodeStats> };
