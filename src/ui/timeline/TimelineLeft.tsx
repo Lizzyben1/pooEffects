@@ -20,6 +20,7 @@ import { toLayerTime } from '../../core/evaluate';
 import { createShapeItem } from '../../core/factory';
 import { SHAPE_TYPE_NAMES, TEXT_ANIM_DESCS, TEXT_ANIM_ORDER } from '../../core/props';
 import { getTime } from '../../state/time';
+import { deleteTracker, setTracking, trackerKindName, useTracking } from '../../state/tracking';
 
 export const INDENT = 14;
 
@@ -34,7 +35,7 @@ function Twirl({ open, onClick }: { open: boolean; onClick: (e: React.MouseEvent
 function SwitchBtn({ on, onClick, title, children, dim }: { on: boolean; onClick: (e: React.MouseEvent) => void; title: string; children: React.ReactNode; dim?: boolean }) {
   return (
     <span className={`sw${on ? ' on' : ''}${dim ? ' dim' : ''}`} title={title} onPointerDown={(e) => e.stopPropagation()} onClick={onClick}>
-      {on || !dim ? children : null}
+      {children}
     </span>
   );
 }
@@ -326,10 +327,24 @@ export const GroupLeft = memo(function GroupLeft({ row, comp }: { row: Extract<R
   const open = useApp((s) => !!s.expanded[row.key] || s.reveal.kind !== 'none');
   const selEffect = useApp((s) => s.selEffect);
   const selShape = useApp((s) => s.selShapeItem);
+  const activeTrackerId = useTracking((s) => s.active?.trackerId ?? null);
   const layer = row.layer;
   let extra: React.ReactNode = null;
   let selected = false;
   switch (row.group) {
+    case 'tracker': {
+      const t = layer.trackers?.find((x) => x.id === row.ref);
+      selected = activeTrackerId === row.ref;
+      if (t) {
+        extra = (
+          <span className="gx" onPointerDown={(e) => e.stopPropagation()}>
+            <span className="trk-kind">{trackerKindName(t.kind)}</span>
+            <button className="icon-btn sm" title="Delete tracker" onClick={() => deleteTracker(comp.id, layer.id, t.id)}><Trash size={11} /></button>
+          </span>
+        );
+      }
+      break;
+    }
     case 'mask': {
       const m = layer.masks.find((x) => x.id === row.ref);
       if (m) {
@@ -446,9 +461,14 @@ export const GroupLeft = memo(function GroupLeft({ row, comp }: { row: Extract<R
         if (row.group === 'effect') setApp({ selEffect: row.ref ?? null, selLayers: getApp().selLayers.includes(layer.id) ? getApp().selLayers : [layer.id] });
         if (row.group === 'shapeGroup' || row.group === 'shapeItem') setApp({ selShapeItem: row.ref ?? null, selLayers: getApp().selLayers.includes(layer.id) ? getApp().selLayers : [layer.id] });
         if (row.group === 'mask') setApp({ selMask: row.ref ?? null });
+        if (row.group === 'tracker' && row.ref) setTracking({ active: { compId: comp.id, layerId: layer.id, trackerId: row.ref } });
+        if (row.group === 'trackPoint' && row.ref) {
+          const tid = row.path?.split('.')[1];
+          if (tid) setTracking({ active: { compId: comp.id, layerId: layer.id, trackerId: tid }, activePoint: row.ref });
+        }
       }}
       onDoubleClick={() => {
-        if (row.group === 'mask' || row.group === 'effect' || row.group === 'shapeGroup' || row.group === 'shapeItem' || row.group === 'animator' || row.group === 'selector') {
+        if (row.group === 'mask' || row.group === 'effect' || row.group === 'shapeGroup' || row.group === 'shapeItem' || row.group === 'animator' || row.group === 'selector' || row.group === 'tracker' || row.group === 'trackPoint') {
           openDialog({
             kind: 'rename', title: 'Rename', value: row.label, onSubmit: (v) => {
               if (row.group === 'effect') A.setEffectField(comp.id, layer.id, row.ref!, { name: v });

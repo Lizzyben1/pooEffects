@@ -80,6 +80,7 @@ function EffectCard({ comp, layer, fx, fe, index, dragOver, setDragOver }: { com
   const groups = new Map<string, EffectParamDef[]>();
   const order: (EffectParamDef | string)[] = [];
   for (const p of def?.params ?? []) {
+    if (p.hidden) continue;
     if (p.group) {
       if (!groups.has(p.group)) {
         groups.set(p.group, []);

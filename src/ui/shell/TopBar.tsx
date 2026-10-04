@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import {
   MousePointer2, Hand, ZoomIn, RotateCw, Orbit, Move, MoveDiagonal, Crosshair, Square, SquareRoundCorner, Circle, Hexagon, Star, PenTool,
-  Type, Undo2, Redo2, Download, Activity,
+  Type, Undo2, Redo2, Download, Activity, Brush,
 } from 'lucide-react';
 import { MENUS } from '../menus/menus';
 import { MenuList } from '../controls/Menu';
@@ -130,6 +130,8 @@ function Toolbar() {
       {btn('shape', ShapeIcon, `Shape Tools (${SHAPE_NAMES[shapeTool]}; right-click for more)`, true)}
       {btn('pen', PenTool, 'Pen Tool')}
       {btn('text', Type, 'Type Tool')}
+      <span className="tool-sep" />
+      {btn('roto', Brush, 'Roto Brush Tool — SAM 2 (Alt+W)')}
     </div>
   );
 }

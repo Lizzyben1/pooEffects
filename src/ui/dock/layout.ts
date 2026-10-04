@@ -99,6 +99,7 @@ export function ensurePanel(node: DockNode, panel: PanelId): DockNode {
     project: ['effectControls'], effectControls: ['project'], flowchart: ['project', 'effectControls'], viewer: ['timeline'],
     timeline: ['renderQueue'], renderQueue: ['timeline'], preview: ['info', 'effects'], info: ['preview'],
     effects: ['character', 'align', 'preview'], character: ['effects', 'align'], align: ['effects', 'character'],
+    tracker: ['effects', 'preview', 'info'],
   };
   for (const p of prefer[panel] ?? []) {
     const g = findGroupOf(node, p);

@@ -17,6 +17,7 @@ import { buildDemoProject, ensureProceduralMedia } from '../demo';
 import { clearAll as clearCache } from '../state/cache';
 import { WORKSPACES } from './dock/workspaces';
 import { ensurePanel } from './dock/layout';
+import { getTracking, stopTracking } from '../state/tracking';
 import type { PanelId } from '../state/uiTypes';
 import type { LightKind, TextAnimatorPropKey } from '../core/types';
 import { host, renderOptions, getViewParams } from '../state/engine';
@@ -119,6 +120,7 @@ export function setTool(t: ReturnType<typeof getApp>['tool']): void {
     const order = ['orbit', 'trackXY', 'trackZ'] as const;
     setApp({ cameraTool: order[(order.indexOf(s.cameraTool) + 1) % order.length] });
   } else setApp({ tool: t });
+  if (t === 'roto') void import('../state/tracking').then((T) => T.setTracking({ mode: 'roto' }));
 }
 
 export function zoomViewer(f: number | 'fit' | 1): void {
@@ -230,7 +232,16 @@ export const commands = {
   saveFrame: () => void saveFramePng(),
   addToRenderQueue: () => addToRenderQueue(),
   // edit
-  undo,
+  undo: () => {
+    // a running track/propagation is one open transaction — finish it before undoing
+    const job = getTracking().job;
+    if (job && job.op !== 'camera') {
+      stopTracking();
+      toast('Stopping the analysis — undo again to revert it', 'info');
+      return;
+    }
+    undo();
+  },
   redo,
   cut: () => A.cutSelection(),
   copy: () => A.copySelection(),
@@ -456,3 +467,25 @@ export const commands = {
   currentScale: () => getViewParams()?.scale ?? 0.5,
 };
 
+
+// ── motion tracking entry points (menus, layer context menu) ────────────────
+
+/** Start a tracking workflow on the first selected footage/precomp layer and reveal the Tracker panel. */
+export function startTracking(op: 'transform' | 'stabilize' | 'perspective' | 'camera' | 'roto'): void {
+  const comp = activeComp();
+  if (!comp) return;
+  void import('../state/tracking').then((T) => {
+    const sel = getApp().selLayers;
+    const layer = comp.layers.find((l) => sel.includes(l.id) && T.isTrackable(l)) ?? comp.layers.find((l) => T.isTrackable(l));
+    togglePanel('tracker');
+    T.setTracking({ mode: op === 'camera' ? 'camera' : op === 'roto' ? 'roto' : 'motion' });
+    if (!layer) {
+      toast('Add or select a footage or precomp layer to track', 'info');
+      return;
+    }
+    setApp({ selLayers: [layer.id] });
+    if (op === 'camera') T.trackCamera(comp.id, layer.id);
+    else if (op === 'roto') setApp({ tool: 'roto' });
+    else T.newTracker(comp.id, layer.id, op);
+  });
+}

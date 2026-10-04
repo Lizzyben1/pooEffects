@@ -1442,6 +1442,172 @@ const radialWipeFx: EffectImpl = {
   },
 };
 
+
+// ── Roto Brush & Refine Edge ────────────────────────────────────────────────
+// The SAM 2 matte for the current layer frame is resampled into the effect's rect, optionally
+// blended with its neighbours (Reduce Chatter), dilated/eroded (Shift Edge), Gaussian feathered,
+// contrast-shaped, and finally combined with the layer — with foreground colour decontamination
+// that replaces background bleed in semi-transparent edge pixels by nearby core foreground colour.
+
+const FS_ROTO_SAMPLE = `${H}
+uniform sampler2D u_m0, u_m1, u_m2;
+uniform vec2 u_srcSize;
+uniform float u_chatter, u_has1, u_has2, u_outside;
+float m(sampler2D t, vec2 q) {
+  if (q.x < 0.0 || q.y < 0.0 || q.x > 1.0 || q.y > 1.0) return 0.0;
+  return texture(t, q).a;
+}
+void main() {
+  vec2 q = layerPos(v_uv) / u_srcSize;
+  float a = m(u_m0, q);
+  float n = 0.0, w = 0.0;
+  if (u_has1 > 0.5) { n += m(u_m1, q); w += 1.0; }
+  if (u_has2 > 0.5) { n += m(u_m2, q); w += 1.0; }
+  if (w > 0.0) a = mix(a, (a + n) / (1.0 + w), u_chatter);
+  a *= (1.0 - u_outside);
+  o = vec4(a);
+}`;
+
+const FS_ROTO_MORPH = `${H}
+uniform vec2 u_dir;
+uniform float u_radius, u_mode;
+void main() {
+  float r = u_radius;
+  float best = texture(u_src, v_uv).a;
+  int n = int(ceil(r));
+  for (int i = 1; i <= 64; i++) {
+    if (i > n) break;
+    float wgt = clamp(r - float(i) + 1.0, 0.0, 1.0);
+    float a = texture(u_src, v_uv + u_dir * float(i)).a;
+    float b = texture(u_src, v_uv - u_dir * float(i)).a;
+    float ext = u_mode > 0.0 ? max(a, b) : min(a, b);
+    float cand = u_mode > 0.0 ? max(best, ext) : min(best, ext);
+    best = mix(best, cand, wgt);
+  }
+  o = vec4(best);
+}`;
+
+const FS_ROTO_CORE = `${H}
+uniform sampler2D u_matte;
+uniform float u_contrast;
+float shape(float a) { return clamp((a - 0.5) * (1.0 + u_contrast * 9.0) + 0.5, 0.0, 1.0); }
+void main() {
+  vec4 c = texture(u_src, v_uv);
+  float a = shape(texture(u_matte, v_uv).a);
+  float core = step(0.97, a) * step(0.02, c.a);
+  vec3 straight = c.a > 0.0 ? c.rgb / c.a : vec3(0.0);
+  o = vec4(straight * core, core);
+}`;
+
+const FS_ROTO_FINAL = `${H}
+uniform sampler2D u_matte, u_core;
+uniform float u_contrast, u_invert, u_decon, u_mode, u_useCore;
+float shape(float a) { return clamp((a - 0.5) * (1.0 + u_contrast * 9.0) + 0.5, 0.0, 1.0); }
+void main() {
+  vec4 src = texture(u_src, v_uv);
+  float a = shape(texture(u_matte, v_uv).a);
+  if (u_invert > 0.5) a = 1.0 - a;
+  vec3 c = src.a > 0.0 ? src.rgb / src.a : vec3(0.0);
+  if (u_useCore > 0.5) {
+    vec4 f = texture(u_core, v_uv);
+    if (f.a > 1e-3) {
+      vec3 fg = f.rgb / f.a;
+      // bleed lives in the partially transparent band; fade the correction out at the core
+      float w = u_decon * clamp((1.0 - a) * 1.6, 0.0, 1.0) * step(0.004, a);
+      c = mix(c, fg, w);
+    }
+  }
+  if (u_mode < 0.5) {
+    float al = a * src.a;
+    o = vec4(c * al, al);
+  } else if (u_mode < 1.5) {
+    o = vec4(vec3(a), 1.0) * src.a;
+  } else {
+    float edge = smoothstep(0.35, 0.5, a) * (1.0 - smoothstep(0.5, 0.65, a));
+    vec3 bg = mix(c, vec3(0.95, 0.12, 0.45), 0.5);
+    vec3 col = mix(bg, c, smoothstep(0.45, 0.55, a));
+    col = mix(col, vec3(1.0, 0.85, 0.2), edge);
+    o = vec4(col, 1.0) * src.a;
+  }
+}`;
+
+const rotoBrushFx: EffectImpl = {
+  render(ctx, input) {
+    const q = ctx.params;
+    const id = q.matte as string;
+    if (!id) return input;
+    const info = ctx.fe.project.mattes?.[id];
+    const frames = info ? Object.keys(info.revs).map(Number).sort((a, b) => a - b) : [];
+    if (!info || !frames.length) return input;
+    const lt = (ctx.time - ctx.layer.startTime) / (ctx.layer.stretch / 100 || 1);
+    const want = Math.round(lt * info.fps);
+    const lo = frames[0], hi = frames[frames.length - 1];
+    const outside = want < lo || want > hi;
+    let fi = want;
+    if (!frames.includes(fi)) {
+      fi = frames.reduce((b, f) => (Math.abs(f - want) < Math.abs(b - want) ? f : b), frames[0]);
+    }
+    const m0 = ctx.matte(id, info.revs[fi]);
+    if (!m0) return input;
+    const chatter = Math.max(0, Math.min(1, (q.chatter ?? 0) / 100));
+    const m1 = chatter > 0 && info.revs[fi - 1] !== undefined ? ctx.matte(id, info.revs[fi - 1]) : null;
+    const m2 = chatter > 0 && info.revs[fi + 1] !== undefined ? ctx.matte(id, info.revs[fi + 1]) : null;
+    const dims = sourceDims(ctx);
+    const glc = ctx.glc;
+    let matte = runPass(ctx, 'fx_roto_sample', FS_ROTO_SAMPLE, input, (p) => {
+      p.tex('u_m0', m0);
+      p.tex('u_m1', m1 ?? m0);
+      p.tex('u_m2', m2 ?? m0);
+      p.set('u_has1', m1 ? 1 : 0);
+      p.set('u_has2', m2 ? 1 : 0);
+      p.set('u_chatter', chatter);
+      p.set('u_outside', outside ? 1 : 0);
+      p.set('u_srcSize', [dims.w, dims.h]);
+    });
+    const shift = (q.shiftEdge ?? 0) * ctx.scale;
+    if (Math.abs(shift) >= 0.25) {
+      for (const dir of [[1 / matte.w, 0], [0, 1 / matte.h]]) {
+        const next = runPass(ctx, 'fx_roto_morph', FS_ROTO_MORPH, matte, (p) => {
+          p.set('u_dir', dir);
+          p.set('u_radius', Math.min(64, Math.abs(shift)));
+          p.set('u_mode', shift > 0 ? 1 : -1);
+        });
+        glc.release(matte);
+        matte = next;
+      }
+    }
+    const feather = (q.feather ?? 0) * ctx.scale;
+    if (feather > 0.3) {
+      const blurred = gaussianBlur(glc, matte, feather * 0.5, ctx.format);
+      glc.release(matte);
+      matte = blurred;
+    }
+    const contrast = Math.max(0, Math.min(1, (q.contrast ?? 0) / 100));
+    let core: Tex | null = null;
+    const decon = q.decontaminate ? Math.max(0, Math.min(1, (q.decontamination ?? 100) / 100)) : 0;
+    if (decon > 0 && q.output !== 'matte') {
+      const raw = runPass(ctx, 'fx_roto_core', FS_ROTO_CORE, input, (p) => {
+        p.tex('u_matte', matte);
+        p.set('u_contrast', contrast);
+      });
+      core = gaussianBlur(glc, raw, Math.max(0.5, (q.deconWidth ?? 6) * ctx.scale * 0.5), ctx.format);
+      glc.release(raw);
+    }
+    const out = runPass(ctx, 'fx_roto_final', FS_ROTO_FINAL, input, (p) => {
+      p.tex('u_matte', matte);
+      p.tex('u_core', core ?? matte);
+      p.set('u_useCore', core ? 1 : 0);
+      p.set('u_contrast', contrast);
+      p.set('u_invert', q.invert ? 1 : 0);
+      p.set('u_decon', decon);
+      p.set('u_mode', q.output === 'matte' ? 1 : q.output === 'overlay' ? 2 : 0);
+    });
+    glc.release(matte);
+    if (core) glc.release(core);
+    return out;
+  },
+};
+
 const passthrough: EffectImpl = { render: (_ctx, input) => input };
 
 export const EFFECT_IMPLS: Record<string, EffectImpl> = {
@@ -1475,6 +1641,7 @@ export const EFFECT_IMPLS: Record<string, EffectImpl> = {
   audioSpectrum: audioSpectrumFx,
   audioWaveform: audioWaveformFx,
   colorKey: colorKeyFx,
+  rotoBrush: rotoBrushFx,
   noise: noiseFx,
   dropShadow: dropShadowFx,
   glow: glowFx,

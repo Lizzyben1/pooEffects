@@ -46,6 +46,8 @@ function signature(project: Project, comp: Composition, out: unknown[] = [], see
       if (n) signature(project, n, out, seen);
     }
     if (l.source?.footageId) out.push(project.footage[l.source.footageId]);
+    // roto mattes live outside the comp tree; their info object changes whenever pixels do
+    for (const fx of l.effects) if (fx.type === 'rotoBrush') out.push(project.mattes?.[fx.params.matte?.value as string]);
   }
   return out;
 }

@@ -248,6 +248,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ['Y'], label: 'Pan Behind (Anchor Point) Tool', group: 'Tools', run: () => setTool('panBehind') },
   { keys: ['Q'], label: 'Shape Tools (press again to cycle)', group: 'Tools', run: () => setTool('shape') },
   { keys: ['G'], label: 'Pen Tool', group: 'Tools', run: () => setTool('pen') },
+  { keys: ['Alt+W'], label: 'Roto Brush Tool (SAM 2)', group: 'Tools', run: () => setTool('roto') },
   { keys: ['Ctrl+T'], label: 'Type Tool', group: 'Tools', run: () => setTool('text'), note: 'Ctrl+T is reserved by most browsers outside an installed app' },
 
   // View

@@ -34,6 +34,8 @@ export interface FxCtx {
   audio: AudioAccess;
   /** frames per second of the comp */
   fps: number;
+  /** roto matte revision as an RGBA texture (all channels = alpha); owned by the renderer, do not release */
+  matte: (matteId: string, rev: number) => Tex | null;
 }
 
 export interface EffectImpl {

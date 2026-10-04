@@ -15,7 +15,7 @@ export const WORKSPACES: Record<string, () => DockNode> = {
       row([
         tabs(['project', 'effectControls', 'flowchart'], 'effectControls'),
         tabs(['viewer']),
-        col([tabs(['preview', 'info']), tabs(['effects', 'character', 'align'])], [0.44, 0.56]),
+        col([tabs(['preview', 'info']), tabs(['effects', 'tracker', 'character', 'align'])], [0.44, 0.56]),
       ], [0.2, 0.6, 0.2]),
       tabs(['timeline', 'renderQueue']),
     ], [0.6, 0.4]),
@@ -45,6 +45,15 @@ export const WORKSPACES: Record<string, () => DockNode> = {
       ], [0.18, 0.58, 0.24]),
       tabs(['timeline']),
     ], [0.6, 0.4]),
+  'Motion Tracking': () =>
+    col([
+      row([
+        tabs(['project', 'effectControls'], 'effectControls'),
+        tabs(['viewer']),
+        col([tabs(['tracker']), tabs(['info', 'preview'])], [0.72, 0.28]),
+      ], [0.18, 0.56, 0.26]),
+      tabs(['timeline', 'renderQueue']),
+    ], [0.64, 0.36]),
   Minimal: () => col([tabs(['viewer']), tabs(['timeline'])], [0.62, 0.38]),
 };
 

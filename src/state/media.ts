@@ -38,6 +38,7 @@ export function attachHost(h: RenderHost): void {
   h.onVideoFrameRequest = (id, t) => fallbackFrame(id, t);
   h.onRestart = () => {
     for (const [id, e] of entries) void sendToHost(id, e);
+    void import('./mattes').then((m) => m.resendMattes());
   };
 }
 

@@ -4,7 +4,7 @@
 import type { AnimProp, Composition, Layer, PropDescriptor, ShapeItem, TextAnimator, TextSelector } from '../../core/types';
 import {
   CAMERA_DESCS, LIGHT_DESCS, MASK_DESCS, MATERIAL_DESCS, RANGE_SELECTOR_DESCS, SHAPE_DESCS, TEXT_ANIM_DESCS, TEXT_ANIM_ORDER,
-  TRANSFORM_DESCS, WIGGLY_SELECTOR_DESCS, getDescriptor,
+  TRACK_POINT_DESCS, TRANSFORM_DESCS, WIGGLY_SELECTOR_DESCS, getDescriptor,
 } from '../../core/props';
 import { getEffectDef, resolveDefault } from '../../effects/catalog';
 import type { RevealMode } from '../../state/uiTypes';
@@ -25,7 +25,8 @@ export type Row =
 
 export type GroupKind =
   | 'transform' | 'masks' | 'mask' | 'effects' | 'effect' | 'effectGroup' | 'contents' | 'shapeGroup' | 'shapeItem' | 'text' | 'animator'
-  | 'selector' | 'advanced' | 'camera' | 'light' | 'material' | 'audio' | 'repeaterTransform' | 'groupTransform' | 'dashes';
+  | 'selector' | 'advanced' | 'camera' | 'light' | 'material' | 'audio' | 'repeaterTransform' | 'groupTransform' | 'dashes'
+  | 'trackers' | 'tracker' | 'trackPoint';
 
 export const ROW_H = 24;
 export const EXPR_H = 58;
@@ -254,6 +255,21 @@ function layerTree(c: Ctx) {
             pushProp(c, `effects.${fx.id}.params.${pd.id}`, fx.params[pd.id], d + 2, pd);
           }
         }, { ref: fx.id, path: `effects.${fx.id}` });
+      }
+    });
+  }
+  if (l.trackers?.length) {
+    pushGroup(c, 'trackers', 'Motion Trackers', d, 'trackers', () => {
+      for (const t of l.trackers!) {
+        const tb = `trackers.${t.id}`;
+        pushGroup(c, tb, t.name, d + 1, 'tracker', () => {
+          for (const p of t.points) {
+            const pb = `${tb}.points.${p.id}`;
+            pushGroup(c, pb, p.name, d + 2, 'trackPoint', () => {
+              for (const k of ['featureCenter', 'confidence', 'attachPoint'] as const) pushProp(c, `${pb}.${k}`, p[k] as AnimProp, d + 3, TRACK_POINT_DESCS[k]);
+            }, { ref: p.id, path: pb });
+          }
+        }, { ref: t.id, path: tb });
       }
     });
   }

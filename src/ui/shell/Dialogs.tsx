@@ -1,7 +1,7 @@
 // Modal dialogs: composition / solid / footage settings, pre-compose, time stretch, keyframe
 // velocity, preferences, keyboard shortcuts, quick export, about and the welcome screen.
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Clapperboard, Film, FilePlus2, FolderOpen, Gauge, Info, Keyboard, Layers, Link, Palette, Play, Search, Settings2, Sparkles, Square,
   Timer, Unlink, Upload, Download, Check, X, Cpu, ListVideo,
@@ -27,6 +27,10 @@ import { clearAll as clearCache, stats as cacheStats } from '../../state/cache';
 import { compHasAudio } from '../../audio/engine';
 import { hexToRgba } from '../../math/color';
 import type { ExportFormat } from '../../render/protocol';
+import { applyTracker, findTracker, setTrackerFields, trackerKindName } from '../../state/tracking';
+import { defaultVariant, loadSam, useRoto } from '../../state/roto';
+import { SAM_VARIANTS, type SamVariant } from '../../cv/sam/protocol';
+import { Crosshair, Brain, HardDriveDownload } from 'lucide-react';
 
 export function DialogsHost() {
   const d = useApp((s) => s.dialog);
@@ -62,6 +66,10 @@ function DialogSwitch({ d }: { d: DialogState }) {
       return <ExportDialog compId={d.compId} />;
     case 'welcome':
       return <WelcomeDialog />;
+    case 'trackTarget':
+      return <TrackTargetDialog compId={d.compId} layerId={d.layerId} trackerId={d.trackerId} />;
+    case 'samModel':
+      return <SamModelDialog />;
   }
 }
 
@@ -839,6 +847,128 @@ function WelcomeDialog() {
           <div style={{ flex: 1 }} />
           <button className="btn primary" onClick={close}>Get started</button>
         </div>
+      </div>
+    </Dialog>
+  );
+}
+
+// ── tracker: edit target ────────────────────────────────────────────────────
+
+function TrackTargetDialog({ compId, layerId, trackerId }: { compId: string; layerId: string; trackerId: string }) {
+  const project = useApp((s) => s.project);
+  const f = findTracker(project, compId, layerId, trackerId);
+  const [target, setTarget] = useState<string>(f?.tracker.targetLayerId ?? '');
+  const [dims, setDims] = useState<'xy' | 'x' | 'y'>(f?.tracker.applyDims ?? 'xy');
+  if (!f) return null;
+  const candidates = f.comp.layers.filter((l) => l.id !== layerId && l.type !== 'audio');
+  const save = (apply: boolean) => {
+    setTrackerFields(compId, layerId, trackerId, { targetLayerId: target || null, applyDims: dims });
+    closeDialog();
+    if (apply) applyTracker(compId, layerId, trackerId);
+  };
+  const isPin = f.tracker.kind === 'perspective';
+  return (
+    <Dialog
+      title="Motion Target"
+      sub={`${f.tracker.name} · ${trackerKindName(f.tracker.kind)} · source “${f.layer.name}”`}
+      icon={<Crosshair size={17} style={{ color: 'var(--accent)' }} />}
+      onClose={closeDialog}
+      width={480}
+      footer={<Foot onOk={() => save(false)} extra={<button className="btn" onClick={() => save(true)}>OK &amp; Apply</button>} />}
+    >
+      <div className="form-grid" onKeyDown={enterKey(() => save(false))}>
+        <Row label="Apply Motion To" hint={isPin ? 'receives a keyframed Corner Pin effect' : 'position (and rotation/scale) keyframes'}>
+          <select className="input" value={target} onChange={(e) => setTarget(e.target.value)} style={{ minWidth: 240 }}>
+            <option value="">New Null Object (created on Apply)</option>
+            {candidates.map((l) => <option key={l.id} value={l.id}>{f.comp.layers.indexOf(l) + 1}. {l.name}</option>)}
+          </select>
+        </Row>
+        {!isPin && (
+          <Row label="Apply Dimensions">
+            <div className="seg">
+              {([['xy', 'X and Y'], ['x', 'X only'], ['y', 'Y only']] as const).map(([v, l]) => (
+                <button key={v} className={`seg-btn${dims === v ? ' on' : ''}`} onClick={() => setDims(v)}>{l}</button>
+              ))}
+            </div>
+          </Row>
+        )}
+        <Row label="Rotation / Scale">
+          <span className="form-hint">{isPin ? 'Perspective tracks drive all four corners.' : f.tracker.rotation || f.tracker.scale ? `Also applies ${[f.tracker.rotation && 'rotation', f.tracker.scale && 'scale'].filter(Boolean).join(' and ')} from the two-point track.` : 'Enable Rotation or Scale in the Tracker panel for a two-point track.'}</span>
+        </Row>
+      </div>
+    </Dialog>
+  );
+}
+
+// ── SAM 2 model ─────────────────────────────────────────────────────────────
+
+function SamModelDialog() {
+  const [variant, setVariant] = useState<SamVariant>(defaultVariant());
+  const [gpu, setGpu] = useState<boolean | null>(null);
+  const roto = useRoto();
+  useEffect(() => {
+    const g = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+    if (!g) {
+      setGpu(false);
+      return;
+    }
+    g.requestAdapter().then((a) => setGpu(!!a)).catch(() => setGpu(false));
+  }, []);
+  const loadLocal = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = '.onnx,.onnx_data';
+    input.onchange = async () => {
+      const files = [...(input.files ?? [])];
+      const pick = (enc: boolean, data: boolean) => files.find((f) => (enc ? /vision_encoder/i.test(f.name) : /prompt_encoder|mask_decoder/i.test(f.name)) && (data ? /\.onnx_data$/i.test(f.name) : /\.onnx$/i.test(f.name)));
+      const e = pick(true, false), ed = pick(true, true), dd = pick(false, false), dda = pick(false, true);
+      if (!e || !dd) {
+        toast('Select the vision_encoder and prompt_encoder_mask_decoder .onnx files (plus their .onnx_data)', 'error', 6000);
+        return;
+      }
+      const name = e.name.replace(/\.onnx$/i, '');
+      const v = (Object.entries(SAM_VARIANTS).find(([, x]) => x.encoder === name)?.[0] ?? variant) as SamVariant;
+      closeDialog();
+      void loadSam(v, {
+        encoder: await e.arrayBuffer(), encoderData: ed ? await ed.arrayBuffer() : undefined,
+        decoder: await dd.arrayBuffer(), decoderData: dda ? await dda.arrayBuffer() : undefined,
+      });
+    };
+    input.click();
+  };
+  const start = () => {
+    closeDialog();
+    void loadSam(variant);
+  };
+  return (
+    <Dialog
+      title="SAM 2 Auto-Rotoscope"
+      sub="Segment Anything 2 · Hiera-Tiny · runs entirely in your browser"
+      icon={<Brain size={17} style={{ color: 'var(--accent)' }} />}
+      onClose={closeDialog}
+      width={560}
+      footer={<Foot onOk={start} okLabel={roto.model === 'ready' ? 'Reload' : 'Download & Load'} extra={<button className="btn ghost" onClick={loadLocal}><HardDriveDownload size={13} /> Load from files…</button>} />}
+    >
+      <div className="sam-dlg">
+        <p className="sam-lead">
+          The model is downloaded once from Hugging Face (<span className="mono">onnx-community/sam2.1-hiera-tiny-ONNX</span>), cached in browser storage, and
+          executed with ONNX Runtime Web inside a worker — {gpu === null ? 'checking for WebGPU…' : gpu ? <b className="ok">WebGPU is available on this device.</b> : <b className="warn">WebGPU is not available; inference falls back to CPU (WASM) and is much slower.</b>}
+        </p>
+        <div className="sam-variants">
+          {(Object.keys(SAM_VARIANTS) as SamVariant[]).map((v) => (
+            <button key={v} className={`sam-variant${variant === v ? ' on' : ''}`} onClick={() => setVariant(v)}>
+              <span className="sam-radio" />
+              <span className="sam-vtext">
+                <b>{SAM_VARIANTS[v].label.split(' — ')[0]}</b>
+                <span>{SAM_VARIANTS[v].label.split(' — ')[1]}</span>
+              </span>
+              <span className="sam-size">{SAM_VARIANTS[v].mb} MB</span>
+              {((gpu && v === 'fp16') || (gpu === false && v === 'int8')) && <span className="sam-rec">Recommended</span>}
+            </button>
+          ))}
+        </div>
+        <p className="form-hint">Nothing leaves your machine: frames are rendered and segmented locally. Prompts: click = foreground, Alt/right-click = background.</p>
       </div>
     </Dialog>
   );

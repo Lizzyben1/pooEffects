@@ -5,6 +5,7 @@ import type { Project } from '../core/types';
 import { getApp, loadProject, setApp, toast, useApp } from './store';
 import { getMedia, idbGet, idbPut, registerMedia } from './media';
 import { clearAll as clearCache } from './cache';
+import { importMatteArchive, matteArchiveFiles } from './mattes';
 
 export async function saveProjectFile(): Promise<void> {
   const s = getApp();
@@ -15,6 +16,7 @@ export async function saveProjectFile(): Promise<void> {
     const m = getMedia(f.id);
     if (m) files[`media/${f.id}`] = new Uint8Array(await m.blob.arrayBuffer());
   }
+  Object.assign(files, matteArchiveFiles(p));
   const zipped = zipSync(files, { level: 1 });
   const blob = new Blob([zipped.slice().buffer as ArrayBuffer], { type: 'application/zip' });
   const name = (s.fileName ?? p.name ?? 'Untitled').replace(/\.pooe$/i, '') + '.pooe';
@@ -38,6 +40,7 @@ export async function openProjectFile(file: File): Promise<void> {
       const f = project.footage[id];
       await registerMedia(id, new File([data.slice().buffer as ArrayBuffer], f?.name ?? id, { type: f?.mime || '' }));
     }
+    importMatteArchive(project, files);
     loadProject(project, file.name);
     toast(`Opened ${file.name}`, 'success');
   } catch (e) {

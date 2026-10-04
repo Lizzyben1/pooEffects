@@ -85,6 +85,12 @@ export const LIGHT_DESCS: Record<string, PropDescriptor> = {
   falloffDistance: num('Falloff Distance', { min: 0, unit: 'px' }),
 };
 
+export const TRACK_POINT_DESCS: Record<string, PropDescriptor> = {
+  featureCenter: { name: 'Feature Center', kind: 'point2', dims: 2, spatial: true, precision: 2 },
+  confidence: pct('Confidence', { precision: 1 }),
+  attachPoint: { name: 'Attach Point', kind: 'point2', dims: 2, spatial: true, precision: 2 },
+};
+
 export const MATERIAL_DESCS: Record<string, PropDescriptor> = {
   ambient: pct('Ambient'),
   diffuse: pct('Diffuse'),
@@ -264,6 +270,8 @@ export function getDescriptor(layer: Layer, path: PropPath): PropDescriptor {
       return LIGHT_DESCS[segs[1]] ?? fallback;
     case 'material':
       return MATERIAL_DESCS[segs[1]] ?? fallback;
+    case 'trackers':
+      return TRACK_POINT_DESCS[segs[4]] ?? fallback;
     case 'audio':
       return { name: 'Audio Levels', kind: 'vec2', dims: 2, unit: 'dB', precision: 2 };
     case 'text': {

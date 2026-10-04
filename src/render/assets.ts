@@ -2,6 +2,7 @@
 // with a main-thread <video> fallback), audio samples for audio-reactive effects, and fonts.
 
 import { ALL_FORMATS, BlobSource, Input, VideoSampleSink, type InputVideoTrack, type VideoSample } from 'mediabunny';
+import { inflateSync } from 'fflate';
 import type { AssetHost } from './renderer';
 
 interface DecodedFrame {
@@ -129,6 +130,9 @@ export class WorkerAssets implements AssetHost {
   private fallbackFrames = new Map<string, DecodedFrame[]>();
   private audio = new Map<string, { mono: Float32Array; sampleRate: number }>();
   private requestFallback: FallbackFrameRequester;
+  /** roto matte revisions: deflated planes + a small cache of inflated ones */
+  private mattes = new Map<string, Map<number, { w: number; h: number; data: Uint8Array }>>();
+  private inflated = new Map<string, Uint8Array>();
 
   constructor(requestFallback: FallbackFrameRequester) {
     this.requestFallback = requestFallback;
@@ -164,6 +168,40 @@ export class WorkerAssets implements AssetHost {
 
   image(id: string): ImageBitmap | null {
     return this.images.get(id) ?? null;
+  }
+
+  setMatte(id: string, rev: number, w: number, h: number, data: Uint8Array): void {
+    let m = this.mattes.get(id);
+    if (!m) this.mattes.set(id, (m = new Map()));
+    m.set(rev, { w, h, data });
+    this.inflated.delete(`${id}:${rev}`);
+  }
+
+  dropMatte(id: string, revs?: number[]): void {
+    const m = this.mattes.get(id);
+    if (!m) return;
+    if (!revs) {
+      this.mattes.delete(id);
+      for (const k of [...this.inflated.keys()]) if (k.startsWith(`${id}:`)) this.inflated.delete(k);
+      return;
+    }
+    for (const r of revs) {
+      m.delete(r);
+      this.inflated.delete(`${id}:${r}`);
+    }
+  }
+
+  matte(id: string, rev: number): { data: Uint8Array; w: number; h: number; key: string } | null {
+    const e = this.mattes.get(id)?.get(rev);
+    if (!e) return null;
+    const ck = `${id}:${rev}`;
+    let raw = this.inflated.get(ck);
+    if (!raw) {
+      raw = inflateSync(e.data);
+      this.inflated.set(ck, raw);
+      while (this.inflated.size > 12) this.inflated.delete(this.inflated.keys().next().value as string);
+    }
+    return { data: raw, w: e.w, h: e.h, key: ck };
   }
 
   /** Make sure frames for the given footage times are decoded (await before a synchronous render). */

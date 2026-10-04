@@ -14,6 +14,14 @@ focus, a mandala built from shape operators, a soft-serve logo made of Bézier p
 synthwave floor, a fractal-noise nebula, and a procedurally synthesised soundtrack driving an Audio Spectrum. Press
 <kbd>Space</kbd> to play it.
 
+It also ships a **Tracking Demo** comp for trying the **computer-vision tools**. It holds a synthetic handheld plate (a
+trucking 3D camera with shake, an angled billboard, pillars at several depths and a textured floor), plus an *Insert
+Card* precomp ready to be corner-pinned onto the billboard. The tools are:
+- the point tracker and stabilizer;
+- the planar corner-pin tracker;
+- the 3D camera solver;
+- **SAM 2 Roto Brush**: AI segmentation running in WebGPU, inside your browser.
+
 ---
 
 ## Quick start
@@ -32,7 +40,7 @@ npm run dev        # http://localhost:5173
 | `npm run build`     | Type-checks the project (`tsc -b`) and builds `dist/`             |
 | `npm run preview`   | Serves the production build locally                               |
 | `npm run typecheck` | Strict TypeScript check only                                      |
-| `npm test`          | Unit tests for the interpolation, timecode, expression and shape engines |
+| `npm test`          | Unit tests: interpolation, timecode, expressions, shapes and the computer-vision solvers |
 
 The production build is a static site: deploy `dist/` to any static host. No server code is involved.
 
@@ -45,6 +53,7 @@ The production build is a static site: deploy `dist/` to any static host. No ser
 | WebCodecs `VideoEncoder` / `AudioEncoder` | MP4 / WebM export | GIF and PNG-sequence export still work |
 | WebCodecs `VideoDecoder` (via mediabunny) | Frame-accurate video decode | `<video>` element seeking on the main thread |
 | Web Audio | Playback, scrubbing, mixdown for export | Silent playback |
+| WebGPU | SAM 2 inference (onnxruntime-web) | WASM SIMD backend (correct, much slower) |
 
 For MP4, the exporter picks the first encodable codec in the order H.264, HEVC, AV1, VP9. For audio it tries AAC, then
 Opus, then MP3. Builds without proprietary codecs, such as Chromium, therefore produce AV1 + Opus MP4s.
@@ -190,12 +199,45 @@ their stack to everything below, limited to their own masked footprint.
 
   Audio is mixed down offline at 48 kHz and muxed in.
 
+### Tracking & computer vision
+All analysis runs in Web Workers on pixels rendered by the GPU worker and passed worker-to-worker as transferable
+buffers. The UI never freezes. Open the **Tracker** panel (or the *Motion Tracking* workspace).
+
+- **Track Motion / Stabilize Motion:**
+  - pyramidal Lucas–Kanade with an AE-style feature region and search region;
+  - coarse-to-fine normalised cross-correlation, sub-pixel alignment with gain/bias compensation;
+  - confidence per frame, with adapt-feature, predict-motion and low-confidence actions;
+  - 1-point (position) or 2-point (position, rotation and scale);
+  - track ±1 frame, forward or backward;
+  - **Edit Target** bakes the result into any layer or a new Null (X/Y/XY). Stabilize writes inverted motion into the
+    layer's anchor point, rotation and scale.
+- **Perspective corner pin:**
+  - planar tracking of a feature cloud with homographies estimated reference → current (normalised DLT, RANSAC,
+    Gauss–Newton) plus projective re-alignment against the reference frame, which removes drift;
+  - bakes into a keyframed Corner Pin effect on the target.
+- **3D Camera Tracker:**
+  - FAST + Shi–Tomasi features, KLT tracks with forward–backward and fundamental-matrix RANSAC pruning;
+  - incremental structure-from-motion (essential matrix, triangulation, PnP);
+  - sparse Levenberg–Marquardt **bundle adjustment** (Schur complement, Huber loss) that also estimates the
+    **focal length**;
+  - tripod-pan detection with rotation-only solves;
+  - creates an animated camera, a 3D point cloud in the viewer, a ground plane from 3 points, and *Create Null / Solid /
+    Text / Shadow Catcher and Camera*.
+- **Roto Brush (SAM 2):**
+  - Segment Anything 2 (Hiera-Tiny, ONNX) on **onnxruntime-web WebGPU**, downloaded once and cached; WASM fallback;
+  - click for foreground, Alt/right-click for background;
+  - temporal propagation forward and backward with flow-warped prompts;
+  - GPU **Refine Edge**: feather, contrast, shift edge, reduce chatter, edge-colour decontamination;
+  - **Freeze** into a track matte or an animated Bézier mask path.
+- A timeline strip shows analysed frames coloured by confidence or solve error. Tracking keyframes appear under
+  *Motion Trackers*. Each run is a single undo step.
+
 ### Project & media
 - Import video, images, audio and fonts (`.ttf`, `.otf`, `.woff`, `.woff2`) with the file picker or by dropping files
   anywhere.
 - Video is decoded frame-accurately with WebCodecs and demuxed by mediabunny.
 - **Auto-save:** the project and its media persist in IndexedDB.
-- **Save / Open:** a `.pooe` file is a ZIP holding `project.json` and the media.
+- **Save / Open:** a `.pooe` file is a ZIP holding `project.json`, the media and the roto mattes.
 - Undo / redo covers every edit. Drags and scrubs count as single undo steps.
 
 ---
@@ -210,6 +252,8 @@ src/
   shapes/      shape generators, path operators, evaluation (AE semantics) and Canvas2D rasterisation
   text/        text layout, animator/selector evaluation, rasterisation
   effects/     effect catalogue (parameters, UI metadata)
+  cv/          computer vision: linear algebra, pyramids, FAST/Shi–Tomasi, KLT, homography, epipolar geometry,
+               PnP, bundle adjustment, SfM, planar & point trackers, mattes, tracking worker, SAM 2 engine + worker
   render/      WebGL2 context + shaders, effect implementations, renderer, worker server/host, protocol
   export/      WebCodecs / GIF / PNG-sequence exporter (runs in the worker)
   audio/       Web Audio playback, scrubbing and offline mixdown
@@ -218,7 +262,7 @@ src/
   ui/          React UI: shell, dock, viewer, timeline, panels, controls, menus, keymap
   styles/      theme and component styles
 tests/         node:test suites (run with tsx)
-docs/          ARCHITECTURE.md — frame lifecycle, matrix math, shader pass graph, keyframe evaluation
+docs/          ARCHITECTURE.md — frame lifecycle, matrix math, shader pass graph, keyframe evaluation, tracking (§14)
 ```
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for how the engine works.
@@ -229,3 +273,12 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for how the engine works.
   renders correctly but slowly. Use the viewer's Resolution menu, Draft 3D (⚡) or a lower RAM-preview resolution.
 - H.264 and AAC encoding depend on the browser build (see Browser support above).
 - Raw camera formats and 3D model import are out of scope. Everything runs on standard web APIs.
+- **SAM 2 propagation.** The public ONNX export of SAM 2 has no memory-attention modules, so video propagation carries
+  the previous matte forward as flow-warped box/point prompts (see ARCHITECTURE §14.5). It is not SAM 2's native memory
+  bank. The model (62–155 MB depending on precision) downloads from Hugging Face on first use. Load it from local files
+  for offline use.
+- **3D camera tracker.**
+  - It assumes a single fixed focal length, a centred principal point and no lens distortion.
+  - The tracked layer should fill the comp without rotation for an exact camera match.
+- **Tracking speed** scales with the GPU because the render worker produces the analysis frames. Software-rasterised
+  environments track correctly but slowly.
