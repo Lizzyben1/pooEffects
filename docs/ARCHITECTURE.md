@@ -547,12 +547,16 @@ confidence`. They show up in the timeline under *Motion Trackers*. A whole run i
 8. **Tripod pans** (homography explains everything) are solved as **rotation-only cameras**: 2-point Kabsch RANSAC on
    bearing vectors, then a rotation-only bundle adjustment with points on the unit sphere.
 
-**Measured on the Tracking Demo plate** (real rendered frames, 2 s, "Low" detail, 720 px analysis):
-- solve error 0.26 px RMS;
-- median per-point error 0.12 px;
-- 259 points;
-- yaw change −6.3° (ground truth ≈ −6.2°);
-- horizontal FOV 64.8° (ground truth 61.9°). The residual focal bias comes from the short, mostly lateral move.
+**Measured on the Tracking Demo plate** (real rendered frames, "Low" detail, 720 px analysis):
+
+| Run | Frames | RMS error | Median point error | Points | Horizontal FOV (truth 61.9°) |
+| --- | --- | --- | --- | --- | --- |
+| 2 s | 60 | 0.26 px | 0.12 px | 259 | 64.8° |
+| full 6 s | 180 | 0.36 px | 0.21 px | 260 | 58.1° |
+
+- The 2 s run's yaw change was −6.3° (ground truth ≈ −6.2°).
+- Focal length is recovered to about ±6% on this mostly lateral move. On synthetic scenes with 14% drifting tracks it is
+  within 0.01%.
 
 **Solver → comp space** (`sceneMap`):
 - The first camera becomes AE's default camera at `[w/2, h/2, −zoom]` with identity orientation.

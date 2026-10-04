@@ -17,6 +17,7 @@ import { buildDemoProject, ensureProceduralMedia } from '../demo';
 import { clearAll as clearCache } from '../state/cache';
 import { WORKSPACES } from './dock/workspaces';
 import { ensurePanel } from './dock/layout';
+import { getTracking, stopTracking } from '../state/tracking';
 import type { PanelId } from '../state/uiTypes';
 import type { LightKind, TextAnimatorPropKey } from '../core/types';
 import { host, renderOptions, getViewParams } from '../state/engine';
@@ -231,7 +232,16 @@ export const commands = {
   saveFrame: () => void saveFramePng(),
   addToRenderQueue: () => addToRenderQueue(),
   // edit
-  undo,
+  undo: () => {
+    // a running track/propagation is one open transaction — finish it before undoing
+    const job = getTracking().job;
+    if (job && job.op !== 'camera') {
+      stopTracking();
+      toast('Stopping the analysis — undo again to revert it', 'info');
+      return;
+    }
+    undo();
+  },
   redo,
   cut: () => A.cutSelection(),
   copy: () => A.copySelection(),
