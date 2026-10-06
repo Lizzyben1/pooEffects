@@ -127,8 +127,12 @@ export async function runExport(job: ExportJob, deps: ExportDeps): Promise<void>
         transparent: transparentIndex >= 0, transparentIndex: Math.max(0, transparentIndex), dispose: hasAlpha ? 2 : -1,
       });
     } else {
-      const blob = await canvas.convertToBlob({ type: 'image/png' });
-      pngs[`${job.filename.replace(/\.zip$/i, '')}_${String(f).padStart(5, '0')}.png`] = new Uint8Array(await blob.arrayBuffer());
+      const blob = 'convertToBlob' in canvas
+        ? await (canvas as OffscreenCanvas).convertToBlob({ type: 'image/png' })
+        : await new Promise<Blob | null>((r) => (canvas as unknown as HTMLCanvasElement).toBlob(r, 'image/png'));
+      if (blob) {
+        pngs[`${job.filename.replace(/\.zip$/i, '')}_${String(f).padStart(5, '0')}.png`] = new Uint8Array(await blob.arrayBuffer());
+      }
     }
     renderer.endFrame();
 

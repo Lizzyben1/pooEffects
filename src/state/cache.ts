@@ -163,7 +163,8 @@ export function stats(): { frames: number; mb: number; budgetMb: number } {
   return { frames: entries.size, mb: totalBytes / 1048576, budgetMb: budgetBytes() / 1048576 };
 }
 
-/** Is it budget-feasible to keep caching more frames? */
+/** Is it budget-feasible to keep caching more frames? Eviction will make room if needed. */
 export function hasRoom(nextBytes: number): boolean {
-  return totalBytes + nextBytes <= budgetBytes() * 0.98;
+  return nextBytes <= budgetBytes() * 0.95;
 }
+

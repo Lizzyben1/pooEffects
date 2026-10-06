@@ -936,8 +936,11 @@ export function createAtTrackPoints(compId: string, layerId: string, kind: Scene
         let { n } = fitPlane(P);
         // layer z axis points away from the camera (we see the layer's front)
         if (dot3(n, [c[0] - camPos[0], c[1] - camPos[1], c[2] - camPos[2]]) < 0) n = [-n[0], -n[1], -n[2]];
-        let x: V3 = [1, 0, 0];
-        x = normalize3([x[0] - n[0] * dot3(x, n), x[1] - n[1] * dot3(x, n), x[2] - n[2] * dot3(x, n)]);
+        let xProj: V3 = [1 - n[0] * dot3([1, 0, 0], n), -n[1] * dot3([1, 0, 0], n), -n[2] * dot3([1, 0, 0], n)];
+        if (Math.hypot(xProj[0], xProj[1], xProj[2]) < 1e-4) {
+          xProj = [-n[0] * dot3([0, 1, 0], n), 1 - n[1] * dot3([0, 1, 0], n), -n[2] * dot3([0, 1, 0], n)];
+        }
+        const x = normalize3(xProj);
         const y = cross3(n, x);
         const R = Float64Array.of(x[0], y[0], n[0], x[1], y[1], n[1], x[2], y[2], n[2]);
         orientation = matToEulerXYZ(R);

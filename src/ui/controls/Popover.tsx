@@ -1,5 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+
+const PopoverParentContext = createContext<string | null>(null);
 
 /** Fixed-position popover anchored at a screen point, auto-flipped to stay on screen. */
 export function Popover({
@@ -13,6 +15,8 @@ export function Popover({
   anchorRect?: DOMRect;
   align?: 'start' | 'end';
 }) {
+  const id = useId();
+  const parentId = useContext(PopoverParentContext);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false });
   useLayoutEffect(() => {
@@ -30,7 +34,18 @@ export function Popover({
   }, [x, y, anchorRect, align]);
   useEffect(() => {
     const down = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      const target = e.target as HTMLElement | null;
+      if (!ref.current || !target) return;
+      if (ref.current.contains(target)) return;
+      // Also check if target is inside a descendant popover of this popover
+      let cur: HTMLElement | null = target.closest('.popover');
+      while (cur) {
+        if (cur.getAttribute('data-popover-parent') === id) return;
+        const nextParentId = cur.getAttribute('data-popover-parent');
+        if (!nextParentId) break;
+        cur = document.querySelector(`.popover[data-popover-id="${nextParentId}"]`);
+      }
+      onClose();
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -45,11 +60,21 @@ export function Popover({
       window.removeEventListener('pointerdown', down, true);
       window.removeEventListener('keydown', key, true);
     };
-  }, [onClose]);
+  }, [onClose, id]);
   return createPortal(
-    <div ref={ref} className={`popover ${className}`} style={{ left: pos.left, top: pos.top, visibility: pos.ready ? 'visible' : 'hidden' }} onContextMenu={(e) => e.preventDefault()}>
-      {children}
-    </div>,
+    <PopoverParentContext.Provider value={id}>
+      <div
+        ref={ref}
+        data-popover-id={id}
+        data-popover-parent={parentId ?? undefined}
+        className={`popover ${className}`}
+        style={{ left: pos.left, top: pos.top, visibility: pos.ready ? 'visible' : 'hidden' }}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {children}
+      </div>
+    </PopoverParentContext.Provider>,
     document.body,
   );
 }
+

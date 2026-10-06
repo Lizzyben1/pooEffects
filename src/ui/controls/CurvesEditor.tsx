@@ -51,7 +51,7 @@ export function CurvesEditor({ value, onChange }: { value: CurvesValue; onChange
       ctx.stroke();
       ctx.globalAlpha = 1;
     };
-    (['r', 'g', 'b', 'rgb'] as Ch[]).forEach((k) => k !== ch && drawCurve(k, 0.25));
+    (['rgb', 'r', 'g', 'b', 'a'] as Ch[]).forEach((k) => k !== ch && drawCurve(k, 0.25));
     drawCurve(ch, 1);
     for (const p of value[ch]) {
       ctx.fillStyle = '#0c0e12';
@@ -104,7 +104,7 @@ export function CurvesEditor({ value, onChange }: { value: CurvesValue; onChange
             const np = toPt(ev);
             const lo = idx > 0 ? pts[idx - 1][0] + 0.01 : 0;
             const hi = idx < pts.length - 1 ? pts[idx + 1][0] - 0.01 : 1;
-            pts[idx] = [Math.min(hi, Math.max(lo, np[0])), np[1]];
+            pts[idx] = [Math.min(hi, Math.max(lo, np[0])), Math.min(1, Math.max(0, np[1]))];
             onChange({ ...value, [ch]: pts.map((p) => [p[0], p[1]] as Vec2) });
           };
           const up = () => {

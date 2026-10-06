@@ -9,7 +9,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AnimProp, Composition, Keyframe, Layer } from '../../core/types';
-import { beginTx, endTx, getApp, keyOf, propKey, refOf, setApp, useApp, openContextMenu } from '../../state/store';
+import { beginTx, endTx, getApp, keyOf, propKey, refOf, setApp, useApp, openContextMenu, setTimeline } from '../../state/store';
 import { getTime, timeStore } from '../../state/time';
 import { toCompTime, toLayerTime, stretchFactor } from '../../core/evaluate';
 import { keyframedValue, segmentControls, speedAt, isNumArray } from '../../anim/interpolate';
@@ -38,6 +38,55 @@ type Hit =
   | { kind: 'kf'; s: Series; k: Keyframe; dim: number }
   | { kind: 'handle'; s: Series; k: Keyframe; idx: number; side: 'in' | 'out'; dim: number };
 
+function kfMarkerType(k: Keyframe, side?: 'in' | 'out'): 'hold' | 'linear' | 'auto' | 'bezier' {
+  if (side === 'in') {
+    if (k.inType === 'hold') return 'hold';
+    if (k.inType === 'linear') return 'linear';
+    if (k.inType === 'auto') return 'auto';
+    return 'bezier';
+  }
+  if (k.outType === 'hold') return 'hold';
+  if (k.inType === 'auto' && k.outType === 'auto') return 'auto';
+  if (k.inType === 'linear' && k.outType === 'linear') return 'linear';
+  return 'bezier';
+}
+
+function drawKeyframeMarker(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  type: 'hold' | 'linear' | 'auto' | 'bezier',
+): void {
+  const rx = Math.round(x);
+  const ry = Math.round(y);
+  if (type === 'hold') {
+    ctx.fillRect(rx - 3.5, ry - 3.5, 7, 7);
+    ctx.strokeRect(rx - 3.5, ry - 3.5, 7, 7);
+    return;
+  }
+  ctx.beginPath();
+  if (type === 'auto') {
+    ctx.arc(rx, ry, 4, 0, Math.PI * 2);
+  } else if (type === 'bezier') {
+    ctx.moveTo(rx - 4, ry - 4);
+    ctx.lineTo(rx, ry);
+    ctx.lineTo(rx - 4, ry + 4);
+    ctx.closePath();
+    ctx.moveTo(rx + 4, ry - 4);
+    ctx.lineTo(rx, ry);
+    ctx.lineTo(rx + 4, ry + 4);
+    ctx.closePath();
+  } else {
+    ctx.moveTo(rx, ry - 4.5);
+    ctx.lineTo(rx + 4.5, ry);
+    ctx.lineTo(rx, ry + 4.5);
+    ctx.lineTo(rx - 4.5, ry);
+    ctx.closePath();
+  }
+  ctx.fill();
+  ctx.stroke();
+}
+
 export function GraphEditor({ comp, tm, rows }: { comp: Composition; tm: TimeMap; rows: Row[] }) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -50,6 +99,27 @@ export function GraphEditor({ comp, tm, rows }: { comp: Composition; tm: TimeMap
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const hover = useRef<Hit | null>(null);
   const yRange = useRef<{ lo: number; hi: number }>({ lo: 0, hi: 1 });
+  const [yPan, setYPan] = useState(0);
+  const [yZoom, setYZoom] = useState(1);
+  const baseBounds = useRef({ lo: 0, hi: 1 });
+
+  useEffect(() => {
+    setYPan(0);
+    setYZoom(1);
+  }, [mode]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        setYPan(0);
+        setYZoom(1);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useLayoutEffect(() => {
     const el = wrap.current;
@@ -112,34 +182,94 @@ export function GraphEditor({ comp, tm, rows }: { comp: Composition; tm: TimeMap
   const tA = tm.t(0), tB = tm.t(size.w);
   let lo = Infinity, hi = -Infinity;
   for (const s of series) {
-    for (let d = 0; d < curveDims(s); d++) {
-      for (let i = 0; i <= 80; i++) {
-        const v = sample(s, tA + ((tB - tA) * i) / 80, d);
+    const kfs = s.prop.keyframes;
+    const dims = curveDims(s);
+    for (let d = 0; d < dims; d++) {
+      // 1. Screen sweep at dense resolution across visible width
+      const steps = Math.max(80, Math.min(300, Math.ceil(size.w / 4)));
+      for (let i = 0; i <= steps; i++) {
+        const v = sample(s, tA + ((tB - tA) * i) / steps, d);
         if (Number.isFinite(v)) {
           lo = Math.min(lo, v);
           hi = Math.max(hi, v);
         }
       }
-      for (const k of s.prop.keyframes) {
-        const v = sample(s, toCompTime(s.layer, k.t), d);
-        if (Number.isFinite(v)) {
-          lo = Math.min(lo, v);
-          hi = Math.max(hi, v);
+      // 2. Sample keyframe incoming/outgoing speeds and ease tangents
+      for (let idx = 0; idx < kfs.length; idx++) {
+        const k = kfs[idx];
+        const ct = toCompTime(s.layer, k.t);
+        if (mode === 'value') {
+          const v = valueAt(s, ct, d);
+          if (Number.isFinite(v)) {
+            lo = Math.min(lo, v);
+            hi = Math.max(hi, v);
+          }
+        } else {
+          if (idx > 0) {
+            const vIn = speedAtT(s, ct - 1e-4, d);
+            if (Number.isFinite(vIn)) {
+              lo = Math.min(lo, vIn);
+              hi = Math.max(hi, vIn);
+            }
+          }
+          if (idx < kfs.length - 1) {
+            const vOut = speedAtT(s, ct + 1e-4, d);
+            if (Number.isFinite(vOut)) {
+              lo = Math.min(lo, vOut);
+              hi = Math.max(hi, vOut);
+            }
+          }
+          const sf = Math.abs(stretchFactor(s.layer));
+          const easeOf = (list: { speed: number; influence: number }[]) => list[d] ?? list[0];
+          if (k.easeIn) {
+            const e = easeOf(k.easeIn);
+            if (e && Number.isFinite(e.speed)) {
+              lo = Math.min(lo, e.speed / sf);
+              hi = Math.max(hi, e.speed / sf);
+            }
+          }
+          if (k.easeOut) {
+            const e = easeOf(k.easeOut);
+            if (e && Number.isFinite(e.speed)) {
+              lo = Math.min(lo, e.speed / sf);
+              hi = Math.max(hi, e.speed / sf);
+            }
+          }
+        }
+        // 3. Dense segment sampling between neighbouring keyframes in or near view
+        if (idx < kfs.length - 1) {
+          const nextK = kfs[idx + 1];
+          const ctNext = toCompTime(s.layer, nextK.t);
+          if (ctNext >= tA && ct <= tB) {
+            const segSpan = ctNext - ct;
+            for (let step = 1; step <= 9; step++) {
+              const v = sample(s, ct + segSpan * (step / 10), d);
+              if (Number.isFinite(v)) {
+                lo = Math.min(lo, v);
+                hi = Math.max(hi, v);
+              }
+            }
+          }
         }
       }
     }
   }
-  if (!Number.isFinite(lo)) {
-    lo = 0;
-    hi = 1;
+  if (!Number.isFinite(lo)) lo = 0;
+  if (!Number.isFinite(hi)) hi = 1;
+  if (mode === 'speed' && !series.some((s) => !s.spatial && curveDims(s) > 1 && lo < 0)) {
+    lo = Math.min(0, lo);
   }
-  if (mode === 'speed') lo = Math.min(0, lo);
   if (hi - lo < 1e-6) {
     hi += 1;
     lo -= 1;
   }
-  const pad = (hi - lo) * 0.12;
-  yRange.current = { lo: lo - pad, hi: hi + pad };
+  const pad = (hi - lo) * 0.15;
+  const baseLo = lo - pad;
+  const baseHi = hi + pad;
+  baseBounds.current = { lo: baseLo, hi: baseHi };
+  const span = (baseHi - baseLo) / Math.max(0.01, yZoom);
+  const center = (baseLo + baseHi) / 2 + yPan;
+  yRange.current = { lo: center - span / 2, hi: center + span / 2 };
   const yOf = (v: number) => {
     const { lo: a, hi: b } = yRange.current;
     return size.h - 14 - ((v - a) / (b - a)) * (size.h - 28);
@@ -303,8 +433,7 @@ export function GraphEditor({ comp, tm, rows }: { comp: Composition; tm: TimeMap
             ctx.fillStyle = sel ? '#ffc46b' : hv ? '#fff' : '#d8dee9';
             ctx.strokeStyle = '#000a';
             ctx.lineWidth = 1;
-            ctx.fillRect(Math.round(x) - 3.5, Math.round(y) - 3.5, 7, 7);
-            ctx.strokeRect(Math.round(x) - 3.5, Math.round(y) - 3.5, 7, 7);
+            drawKeyframeMarker(ctx, x, y, kfMarkerType(k, side));
           }
         });
       }
@@ -372,6 +501,24 @@ export function GraphEditor({ comp, tm, rows }: { comp: Composition; tm: TimeMap
     if (e.button === 2) return;
     const [x, y] = local(e);
     const h = hitTest(x, y);
+    if (e.button === 1 || (e.button === 0 && e.altKey && !h)) {
+      e.preventDefault();
+      const y0 = e.clientY;
+      const pan0 = yPan;
+      const { lo: a, hi: b } = yRange.current;
+      const move = (ev: PointerEvent) => {
+        const dy = ev.clientY - y0;
+        const dv = ((b - a) / (size.h - 28)) * dy;
+        setYPan(pan0 + dv);
+      };
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+      return;
+    }
     if (h?.kind === 'kf') {
       const key = keyOf({ layerId: h.s.layer.id, path: h.s.path, kfId: h.k.id });
       const s = getApp();
@@ -499,6 +646,29 @@ export function GraphEditor({ comp, tm, rows }: { comp: Composition; tm: TimeMap
         e.preventDefault();
         if (getApp().selKeys.length) openContextMenu(e.clientX, e.clientY, keyframeContextMenu());
       }}
+      onWheel={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const { lo: a, hi: b } = yRange.current;
+        if (e.ctrlKey || e.metaKey || e.altKey) {
+          const r = wrap.current?.getBoundingClientRect();
+          if (!r) return;
+          const my = e.clientY - r.top;
+          const vMouse = vOf(my);
+          const factor = Math.pow(1.002, -e.deltaY);
+          const nextZoom = Math.min(50, Math.max(0.05, yZoom * factor));
+          const nextSpan = (baseBounds.current.hi - baseBounds.current.lo) / nextZoom;
+          const frac = (size.h - 14 - my) / (size.h - 28);
+          const nextLo = vMouse - frac * nextSpan;
+          const nextCenter = nextLo + nextSpan / 2;
+          const baseCenter = (baseBounds.current.lo + baseBounds.current.hi) / 2;
+          setYZoom(nextZoom);
+          setYPan(nextCenter - baseCenter);
+        } else {
+          const dv = ((b - a) / (size.h - 28)) * e.deltaY * 0.5;
+          setYPan((p) => p + dv);
+        }
+      }}
     >
       <canvas ref={canvas} style={{ width: size.w, height: size.h, display: 'block' }} />
       {marquee && (
@@ -512,6 +682,21 @@ export function GraphEditor({ comp, tm, rows }: { comp: Composition; tm: TimeMap
         <button className="btn sm ghost" title="Easy Ease (F9)" onClick={C.easyEase}>Easy Ease</button>
         <button className="btn sm ghost" title="Easy Ease In (Shift+F9)" onClick={C.easeIn}>Ease In</button>
         <button className="btn sm ghost" title="Easy Ease Out (Ctrl+Shift+F9)" onClick={C.easeOut}>Ease Out</button>
+        <span className="ge-sep" />
+        <button
+          className={`btn sm ${mode === 'speed' ? 'primary' : 'ghost'}`}
+          title={mode === 'value' && series.some((s) => s.spatial) ? 'Switch to Speed Graph to edit easing handles on Position' : 'Switch between Value and Speed Graph'}
+          onClick={() => setTimeline(comp.id, { graphMode: mode === 'speed' ? 'value' : 'speed' })}
+        >
+          {mode === 'speed' ? 'Speed Graph' : 'Value Graph'}
+        </button>
+        <button
+          className="btn sm ghost"
+          title="Fit all curves vertically and horizontally (F)"
+          onClick={() => { setYPan(0); setYZoom(1); }}
+        >
+          Fit View
+        </button>
       </div>
     </div>
   );

@@ -963,7 +963,7 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       const inv = M.invert(v.fe.worldMatrix(l));
       return (c: number[]) => (inv ? M.transformPoint(inv, [c[0], c[1], 0]) : c);
     };
-    if (sel && sel.type !== 'shape' && sel.type !== 'camera' && sel.type !== 'light' && sel.type !== 'null' && sel.type !== 'audio' && closed) {
+    if (sel && sel.type !== 'shape' && sel.type !== 'camera' && sel.type !== 'light' && sel.type !== 'null' && sel.type !== 'audio') {
       addMask(comp.id, sel.id, build(toLayer(sel)));
       return;
     }

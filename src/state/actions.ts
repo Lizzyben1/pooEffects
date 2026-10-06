@@ -256,6 +256,8 @@ export function setKeyframeInterpolation(keys: string[], temporal: TemporalInter
   if (!compId || !keys.length) return;
   doc((d) => {
     forEachSelectedKf(keys, compId, d, (kf, p, idx, layer, path) => {
+      const isSpatial = !!getDescriptor(plain(layer) as Layer, path).spatial;
+      const targetSpatial = spatial ?? (isSpatial && temporal ? (temporal === 'linear' ? 'linear' : temporal === 'auto' ? 'auto' : undefined) : undefined);
       if (temporal) {
         if (temporal === 'hold') {
           kf.outType = 'hold';
@@ -264,7 +266,6 @@ export function setKeyframeInterpolation(keys: string[], temporal: TemporalInter
           kf.outType = temporal;
           if (temporal === 'bezier' || temporal === 'continuous') {
             const P = plain(p) as AnimProp;
-            const isSpatial = !!getDescriptor(plain(layer) as Layer, path).spatial;
             const dims = easeDims(kf.v as PropValue, isSpatial);
             const sc = (k: Keyframe, dd: number) => (typeof k.v === 'number' ? (k.v as number) : isNumArray(k.v) ? (k.v as number[])[dd] ?? 0 : P.keyframes.indexOf(k));
             const eases: Ease[] = [];
@@ -274,8 +275,8 @@ export function setKeyframeInterpolation(keys: string[], temporal: TemporalInter
           }
         }
       }
-      if (spatial && kf.spatial !== undefined) {
-        if ((spatial === 'bezier' || spatial === 'continuous') && (kf.spatial === 'auto' || kf.spatial === 'linear')) {
+      if (targetSpatial && (kf.spatial !== undefined || isSpatial)) {
+        if ((targetSpatial === 'bezier' || targetSpatial === 'continuous') && (kf.spatial === 'auto' || kf.spatial === 'linear')) {
           // freeze current auto tangents so the path doesn't jump
           const P = plain(p) as AnimProp;
           const v = kf.v as number[];
@@ -293,7 +294,7 @@ export function setKeyframeInterpolation(keys: string[], temporal: TemporalInter
             kf.to = v.map(() => 0) as never;
           }
         }
-        kf.spatial = spatial;
+        kf.spatial = targetSpatial;
       }
     });
   });
@@ -584,15 +585,26 @@ export function splitLayers(compId: string, ids: string[], t = getTime(compId)):
   if (!comp) return;
   const targets = comp.layers.filter((l) => ids.includes(l.id) && t > Math.min(l.inPoint, l.outPoint) && t < Math.max(l.inPoint, l.outPoint));
   if (!targets.length) return;
+  const idMap = new Map<string, string>();
+  const dups: Layer[] = [];
+  for (const src of targets) {
+    const dup = regenIds(clone(src));
+    idMap.set(src.id, dup.id);
+    dups.push(dup);
+  }
+  for (const c of dups) {
+    if (c.parentId && idMap.has(c.parentId)) c.parentId = idMap.get(c.parentId)!;
+    if (c.trackMatte && idMap.has(c.trackMatte.layerId)) c.trackMatte = { ...c.trackMatte, layerId: idMap.get(c.trackMatte.layerId)! };
+  }
   const created: string[] = [];
   doc((d) => {
     const c = compOf(d, compId);
     if (!c) return;
-    for (const src of targets) {
-      const idx = c.layers.findIndex((l) => l.id === src.id);
+    for (const dup of dups) {
+      const srcId = [...idMap].find(([, v]) => v === dup.id)![0];
+      const idx = c.layers.findIndex((l) => l.id === srcId);
       const orig = c.layers[idx];
-      const dup = regenIds(clone(src));
-      dup.name = uniqueLayerName(c as Composition, src.name);
+      dup.name = uniqueLayerName(c as Composition, orig.name);
       dup.inPoint = t;
       orig.outPoint = t;
       c.layers.splice(idx, 0, dup as never);
@@ -1026,9 +1038,14 @@ export function precompose(compId: string, ids: string[], name: string, moveAll 
   const pl = createPrecompLayer(comp, nested);
   pl.name = nested.name;
   if (!moveAll && moving.length === 1) {
-    // keep transform on the outer layer (AE "Leave all attributes")
+    // keep transform, effects and masks on the outer layer (AE "Leave all attributes")
     pl.transform = clone(moving[0].transform);
+    pl.masks = clone(moving[0].masks);
+    pl.effects = clone(moving[0].effects);
+    pl.effectsEnabled = moving[0].effectsEnabled;
     nested.layers[0].transform = clone(createPrecompLayer(nested, nested).transform);
+    nested.layers[0].masks = [];
+    nested.layers[0].effects = [];
   }
   const firstIdx = comp.layers.findIndex((l) => ids.includes(l.id));
   doc((d) => {
@@ -1064,11 +1081,18 @@ export function deleteProjectItems(ids: string[]): void {
       c.layers = c.layers.filter((l) => !(l.source?.compId && compIds.includes(l.source.compId)) && !(l.source?.footageId && footIds.includes(l.source.footageId)));
     }
   });
-  setApp((s) => ({
-    selItems: [],
-    openComps: s.openComps.filter((c) => !compIds.includes(c)),
-    activeCompId: s.activeCompId && compIds.includes(s.activeCompId) ? Object.keys(getApp().project.comps)[0] ?? null : s.activeCompId,
-  }));
+  setApp((s) => {
+    const nextOpen = s.openComps.filter((c) => !compIds.includes(c));
+    let nextActive = s.activeCompId && compIds.includes(s.activeCompId) ? (nextOpen[0] ?? Object.keys(getApp().project.comps)[0] ?? null) : s.activeCompId;
+    if (nextActive && !nextOpen.includes(nextActive)) {
+      nextOpen.push(nextActive);
+    }
+    return {
+      selItems: [],
+      openComps: nextOpen,
+      activeCompId: nextActive,
+    };
+  });
 }
 
 export function renameItem(id: string, name: string): void {

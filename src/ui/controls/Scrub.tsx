@@ -66,7 +66,7 @@ export function Scrub({
 }: ScrubProps) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState('');
-  const drag = useRef<{ x: number; v: number; moved: boolean; pid: number } | null>(null);
+  const drag = useRef<{ startX: number; lastX: number; curVal: number; moved: boolean; pid: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
 
@@ -110,20 +110,22 @@ export function Scrub({
         if (e.button !== 0) return;
         e.stopPropagation();
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-        drag.current = { x: e.clientX, v: value, moved: false, pid: e.pointerId };
+        drag.current = { startX: e.clientX, lastX: e.clientX, curVal: value, moved: false, pid: e.pointerId };
       }}
       onPointerMove={(e) => {
         const d = drag.current;
         if (!d) return;
-        const dx = e.clientX - d.x;
-        if (!d.moved && Math.abs(dx) < 3) return;
+        if (!d.moved && Math.abs(e.clientX - d.startX) < 3) return;
         if (!d.moved) {
           d.moved = true;
           if (!noTx) beginTx();
           document.body.style.cursor = 'ew-resize';
         }
+        const dx = e.clientX - d.lastX;
+        d.lastX = e.clientX;
         const mul = e.shiftKey ? 10 : e.ctrlKey || e.metaKey ? 0.1 : 1;
-        onChange(clamp(d.v + dx * step * mul));
+        d.curVal = clamp(d.curVal + dx * step * mul);
+        onChange(d.curVal);
       }}
       onPointerUp={(e) => {
         const d = drag.current;

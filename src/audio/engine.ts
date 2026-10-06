@@ -80,7 +80,7 @@ function scheduleComp(
     const k = stretchFactor(layer);
     if (layer.type === 'precomp' && layer.source?.compId) {
       const nested = project.comps[layer.source.compId];
-      if (!nested || layer.timeRemapEnabled) continue;
+      if (!nested) continue;
       const n0 = (a - layer.startTime) / k, n1 = (b - layer.startTime) / k;
       if (k < 0) continue; // reversed precomp audio is not supported
       scheduleComp(c, dest, project, nested, n0, n1, {
@@ -90,7 +90,7 @@ function scheduleComp(
       continue;
     }
     const fid = layer.source?.footageId;
-    if (!fid || layer.timeRemapEnabled) continue;
+    if (!fid) continue;
     const f = project.footage[fid];
     if (!f || !f.hasAudio) continue;
     const buf = getMedia(fid)?.audio;

@@ -11,7 +11,7 @@ import {
   createProject, createFootageLayer, rectPath,
 } from '../core/factory';
 import { togglePlay, stop as stopPlayback } from '../state/playback';
-import { openProjectFile, pickFiles, saveProjectFile, downloadBlob } from '../state/projectIO';
+import { openProjectFile, pickFiles, saveProjectFile, downloadBlob, setActiveFileHandle } from '../state/projectIO';
 import { importFile } from '../state/media';
 import { buildDemoProject, ensureProceduralMedia } from '../demo';
 import { clearAll as clearCache } from '../state/cache';
@@ -163,6 +163,7 @@ export async function loadDemo(): Promise<void> {
 export function newProject(): void {
   stopPlayback();
   clearCache();
+  setActiveFileHandle(null);
   const p = createProject('Untitled Project');
   loadProject(p, null);
   openDialog({ kind: 'newComp' });
@@ -220,6 +221,21 @@ export const commands = {
   // file
   newProject,
   openProject: async () => {
+    if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
+      try {
+        const [handle] = await (window as unknown as { showOpenFilePicker: (opts: object) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker({
+          types: [{ description: 'pooEffects Project', accept: { 'application/zip': ['.pooe'] } }],
+          multiple: false,
+        });
+        if (handle) {
+          const file = await handle.getFile();
+          await openProjectFile(file, handle);
+          return;
+        }
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return;
+      }
+    }
     const files = await pickFiles('.pooe,application/zip', false);
     if (files[0]) await openProjectFile(files[0]);
   },

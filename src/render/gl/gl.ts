@@ -404,7 +404,7 @@ export class GLContext {
       const idle = this.pool.filter((t) => !t.inUse).sort((a, b) => a.lastUsed - b.lastUsed);
       for (const t of idle) {
         if (bytes <= budget * 0.7) break;
-        bytes -= t.w * t.h * (t.format === 'rgba8' ? 4 : 8);
+        bytes -= t.w * t.h * (t.format === 'rgba8' ? 4 : t.format === 'rgba16f' ? 8 : 16);
         this.deleteTex(t);
       }
     }

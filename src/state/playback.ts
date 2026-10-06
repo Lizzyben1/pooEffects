@@ -54,6 +54,13 @@ function allCached(s: PlayState): boolean {
   return true;
 }
 
+function cachedAhead(s: PlayState, from = s.frame, count = 10): boolean {
+  const cfg = cfgKey(s.params);
+  const upTo = Math.min(s.last, from + count);
+  for (let f = from; f <= upTo; f++) if (!cache.has(s.compId, f, cfg)) return false;
+  return true;
+}
+
 function beginRealtime(s: PlayState, now: number): void {
   s.realtime = true;
   s.startFrame = s.frame;
@@ -95,7 +102,7 @@ export function play(): void {
   };
   setTime(compId, frame / fps);
   timeStore.setState({ playing: true, playCompId: compId });
-  if (allCached(st)) beginRealtime(st, performance.now());
+  if (allCached(st) || cachedAhead(st, st.frame, Math.min(st.last - st.frame, 8))) beginRealtime(st, performance.now());
   else timeStore.setState({ realtime: false });
   cancelAnimationFrame(raf);
   raf = requestAnimationFrame(tick);
@@ -192,7 +199,7 @@ function tick(now: number): void {
       s.lastAdvance = now;
       s.frames++;
       setTime(s.compId, next / s.fps);
-      if (wrapped && allCached(s)) beginRealtime(s, now);
+      if ((wrapped && allCached(s)) || (!s.realtime && cachedAhead(s, next, Math.min(s.last - next, 8)))) beginRealtime(s, now);
     }
   }
   if (now - s.fpsWindowStart > 500) {

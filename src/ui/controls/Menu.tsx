@@ -24,6 +24,7 @@ export function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () =>
             }}
             onClick={(e) => {
               e.stopPropagation();
+              if (it.disabled) return;
               if (hasSub) {
                 setSub({ idx: i, rect: (e.currentTarget as HTMLElement).getBoundingClientRect() });
                 return;

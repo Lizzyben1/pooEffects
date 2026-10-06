@@ -7,6 +7,12 @@ import { getMedia, idbGet, idbPut, registerMedia } from './media';
 import { clearAll as clearCache } from './cache';
 import { importMatteArchive, matteArchiveFiles } from './mattes';
 
+let activeFileHandle: FileSystemFileHandle | null = null;
+
+export function setActiveFileHandle(handle: FileSystemFileHandle | null): void {
+  activeFileHandle = handle;
+}
+
 export async function saveProjectFile(): Promise<void> {
   const s = getApp();
   const p = s.project;
@@ -20,12 +26,45 @@ export async function saveProjectFile(): Promise<void> {
   const zipped = zipSync(files, { level: 1 });
   const blob = new Blob([zipped.slice().buffer as ArrayBuffer], { type: 'application/zip' });
   const name = (s.fileName ?? p.name ?? 'Untitled').replace(/\.pooe$/i, '') + '.pooe';
+
+  if (activeFileHandle && 'createWritable' in activeFileHandle) {
+    try {
+      const writable = await (activeFileHandle as unknown as { createWritable: () => Promise<FileSystemWritableFileStream> }).createWritable();
+      await writable.write(blob);
+      await writable.close();
+      setApp({ dirty: false, fileName: activeFileHandle.name });
+      toast(`Saved ${activeFileHandle.name}`, 'success');
+      return;
+    } catch {
+      activeFileHandle = null;
+    }
+  }
+
+  if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
+    try {
+      const handle = await (window as unknown as { showSaveFilePicker: (opts: object) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: 'pooEffects Project', accept: { 'application/zip': ['.pooe'] } }],
+      });
+      const writable = await (handle as unknown as { createWritable: () => Promise<FileSystemWritableFileStream> }).createWritable();
+      await writable.write(blob);
+      await writable.close();
+      activeFileHandle = handle;
+      setApp({ dirty: false, fileName: handle.name });
+      toast(`Saved ${handle.name}`, 'success');
+      return;
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
+    }
+  }
+
   downloadBlob(blob, name);
   setApp({ dirty: false, fileName: name });
   toast(`Saved ${name}`, 'success');
 }
 
-export async function openProjectFile(file: File): Promise<void> {
+export async function openProjectFile(file: File, handle?: FileSystemFileHandle): Promise<void> {
+  activeFileHandle = handle ?? null;
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
     const files = unzipSync(buf);
