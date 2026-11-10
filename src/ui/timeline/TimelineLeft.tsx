@@ -1,7 +1,7 @@
 // Left side of the timeline: layer rows (A/V switches, label, name, switches/modes, parent) and
 // property tree rows (twirl-downs, stopwatches, value editors, keyframe navigators, expressions).
 
-import { memo, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import { ChevronRight, ChevronLeft, Eye, EyeOff, Volume2, Lock, RotateCcw, Trash, Equal, ChevronDown } from 'lucide-react';
 import type { Composition, Layer, PropValue, TextAnimatorPropKey, ShapeItemType } from '../../core/types';
 import type { FrameEval } from '../../core/evaluate';
@@ -9,12 +9,13 @@ import { getApp, setApp, useApp, openContextMenu, propKey, openDialog } from '..
 import * as A from '../../state/actions';
 import { getAt } from '../../core/props';
 import type { Row } from './rows';
+import type { SelTarget } from '../../state/uiTypes';
 import { PropEditor } from '../controls/PropEditor';
 import {
   AdjustmentIcon, CollapseIcon, CubeIcon, FxIcon, LayerTypeIcon, MotionBlurIcon, PickWhipIcon, QualityIcon, ShyIcon, SoloIcon, StopwatchIcon,
 } from '../icons';
 import { LABEL_COLORS, rgbaToCss } from '../../math/color';
-import { BLEND_LABELS, layerContextMenu } from '../menus/layerMenu';
+import { BLEND_LABELS, layerContextMenu, propContextMenu, targetContextMenu } from '../menus/layerMenu';
 import { BLEND_MODES } from '../../core/types';
 import { toLayerTime } from '../../core/evaluate';
 import { createShapeItem } from '../../core/factory';
@@ -40,10 +41,19 @@ function SwitchBtn({ on, onClick, title, children, dim }: { on: boolean; onClick
   );
 }
 
+/** What a layer row needs to know about its siblings (parent / track-matte menus). */
+export interface LayerDirEntry {
+  id: string;
+  name: string;
+  type: Layer['type'];
+  index: number;
+}
+
 export interface LeftProps {
   row: Row;
   comp: Composition;
-  fe: FrameEval;
+  /** stable while no layer is added, removed, renamed or reordered */
+  dir: LayerDirEntry[];
   showModes: boolean;
   selected: boolean;
   onLayerPointerDown: (e: React.PointerEvent, layer: Layer) => void;
@@ -63,11 +73,12 @@ function toggleKey(key: string, e: React.MouseEvent) {
   } else A.toggleExpanded(key, open);
 }
 
-export const LayerLeft = memo(function LayerLeft({ row, comp, showModes, selected, onLayerPointerDown, onPickWhip, dropTarget }: LeftProps) {
+export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showModes, selected, onLayerPointerDown, onPickWhip, dropTarget }: LeftProps) {
   const layer = (row as Extract<Row, { kind: 'layer' }>).layer;
   const index = (row as Extract<Row, { kind: 'layer' }>).index;
   const expanded = useApp((s) => !!s.expanded[layer.id]);
   const [renaming, setRenaming] = useState(false);
+  const renameCancelled = useRef(false);
   const ids = () => (getApp().selLayers.includes(layer.id) ? getApp().selLayers : [layer.id]);
   const sw = (key: keyof Layer) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -112,19 +123,20 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, showModes, selecte
           onPointerDown={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             e.stopPropagation();
-            if (e.key === 'Enter') {
-              A.setLayerFields(comp.id, [layer.id], { name: (e.target as HTMLInputElement).value || layer.name });
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') {
+              renameCancelled.current = true;
               setRenaming(false);
             }
-            if (e.key === 'Escape') setRenaming(false);
           }}
           onBlur={(e) => {
-            A.setLayerFields(comp.id, [layer.id], { name: e.target.value || layer.name });
+            const name = e.target.value.trim();
+            if (!renameCancelled.current && name && name !== layer.name) A.setLayerFields(comp.id, [layer.id], { name });
             setRenaming(false);
           }}
         />
       ) : (
-        <span className={`lname${layer.guide ? ' guide' : ''}`} onDoubleClick={() => setRenaming(true)} title={layer.name}>
+        <span className={`lname${layer.guide ? ' guide' : ''}`} onDoubleClick={() => { renameCancelled.current = false; setRenaming(true); }} title={layer.name}>
           {layer.name}
         </span>
       )}
@@ -159,9 +171,9 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, showModes, selecte
             }}
           >
             <option value="">No Matte</option>
-            {comp.layers.filter((l) => l.id !== layer.id && l.type !== 'camera' && l.type !== 'light' && l.type !== 'audio').map((l) => (
+            {dir.filter((l) => l.id !== layer.id && l.type !== 'camera' && l.type !== 'light' && l.type !== 'audio').map((l) => (
               (['alpha', 'alphaInverted', 'luma', 'lumaInverted'] as const).map((m) => (
-                <option key={`${l.id}|${m}`} value={`${l.id}|${m}`}>{comp.layers.indexOf(l) + 1}. {l.name.slice(0, 14)} — {{ alpha: 'Alpha', alphaInverted: 'Alpha Inv', luma: 'Luma', lumaInverted: 'Luma Inv' }[m]}</option>
+                <option key={`${l.id}|${m}`} value={`${l.id}|${m}`}>{l.index + 1}. {l.name.slice(0, 14)} — {{ alpha: 'Alpha', alphaInverted: 'Alpha Inv', luma: 'Luma', lumaInverted: 'Luma Inv' }[m]}</option>
               ))
             ))}
           </select>
@@ -179,11 +191,16 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, showModes, selecte
           onChange={(e) => A.setParent(comp.id, layer.id, e.target.value || null)}
         >
           <option value="">None</option>
-          {comp.layers.filter((l) => l.id !== layer.id).map((l) => <option key={l.id} value={l.id}>{comp.layers.indexOf(l) + 1}. {l.name}</option>)}
+          {dir.filter((l) => l.id !== layer.id).map((l) => <option key={l.id} value={l.id}>{l.index + 1}. {l.name}</option>)}
         </select>
       </div>
     </div>
   );
+}, (a, b) => {
+  // only this layer (or the sibling directory) changing re-renders the row; the comp object itself changes on every edit
+  const ra = a.row as Extract<Row, { kind: 'layer' }>, rb = b.row as Extract<Row, { kind: 'layer' }>;
+  return ra.layer === rb.layer && ra.index === rb.index && a.comp.id === b.comp.id && a.dir === b.dir && a.showModes === b.showModes
+    && a.selected === b.selected && a.dropTarget === b.dropTarget && a.onLayerPointerDown === b.onLayerPointerDown && a.onPickWhip === b.onPickWhip;
 });
 
 function KeyNav({ comp, layer, path }: { comp: Composition; layer: Layer; path: string }) {
@@ -215,6 +232,13 @@ export const PropLeft = memo(function PropLeft({ row, comp, fe }: { row: Extract
     <div
       className={`tl-left prop${selected ? ' selected' : ''}`}
       style={{ paddingLeft: 6 + depth * INDENT }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const k = propKey(layer.id, path);
+        setApp((s) => ({ selProps: s.selProps.includes(k) ? s.selProps : [k], selLayers: s.selLayers.includes(layer.id) ? s.selLayers : [layer.id] }));
+        openContextMenu(e.clientX, e.clientY, propContextMenu(comp.id, layer, path, prop, desc));
+      }}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         const k = propKey(layer.id, path);
@@ -328,6 +352,7 @@ export const GroupLeft = memo(function GroupLeft({ row, comp }: { row: Extract<R
   const selEffect = useApp((s) => s.selEffect);
   const selShape = useApp((s) => s.selShapeItem);
   const activeTrackerId = useTracking((s) => s.active?.trackerId ?? null);
+  const picked = useApp((s) => !!row.ref && s.selTarget?.id === row.ref);
   const layer = row.layer;
   let extra: React.ReactNode = null;
   let selected = false;
@@ -452,31 +477,52 @@ export const GroupLeft = memo(function GroupLeft({ row, comp }: { row: Extract<R
       );
       break;
   }
+  // the sub-item this row stands for (what Delete, Duplicate and the context menu act on)
+  const target: SelTarget | null = !row.ref ? null
+    : row.group === 'effect' ? { kind: 'effect', layerId: layer.id, id: row.ref }
+      : row.group === 'mask' ? { kind: 'mask', layerId: layer.id, id: row.ref }
+        : row.group === 'tracker' ? { kind: 'tracker', layerId: layer.id, id: row.ref }
+          : (row.group === 'shapeGroup' || row.group === 'shapeItem') && row.path ? { kind: 'shapeItem', layerId: layer.id, id: row.ref, path: row.path }
+            : (row.group === 'animator' || row.group === 'selector') && row.path ? { kind: 'textNode', layerId: layer.id, id: row.ref, path: row.path }
+              : null;
+  if (picked) selected = true;
+  const rename = (v: string) => {
+    if (row.group === 'effect') A.setEffectField(comp.id, layer.id, row.ref!, { name: v });
+    else if (row.group === 'mask') A.setMaskFields(comp.id, layer.id, row.ref!, { name: v });
+    else if (row.path) A.setLayerPath(comp.id, layer.id, `${row.path}.name`, v);
+  };
+  const pick = () => {
+    const s = getApp();
+    const selLayers = s.selLayers.includes(layer.id) ? s.selLayers : [layer.id];
+    if (target) {
+      setApp({
+        selTarget: target, selLayers, selKeys: [],
+        ...(target.kind === 'effect' ? { selEffect: target.id } : target.kind === 'mask' ? { selMask: target.id } : target.kind === 'shapeItem' ? { selShapeItem: target.id } : {}),
+      });
+    }
+    if (row.group === 'tracker' && row.ref) setTracking({ active: { compId: comp.id, layerId: layer.id, trackerId: row.ref } });
+    if (row.group === 'trackPoint' && row.ref) {
+      const tid = row.path?.split('.')[1];
+      if (tid) setTracking({ active: { compId: comp.id, layerId: layer.id, trackerId: tid }, activePoint: row.ref });
+    }
+  };
   return (
     <div
       className={`tl-left group${selected ? ' selected' : ''}`}
       style={{ paddingLeft: 6 + row.depth * INDENT }}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
-        if (row.group === 'effect') setApp({ selEffect: row.ref ?? null, selLayers: getApp().selLayers.includes(layer.id) ? getApp().selLayers : [layer.id] });
-        if (row.group === 'shapeGroup' || row.group === 'shapeItem') setApp({ selShapeItem: row.ref ?? null, selLayers: getApp().selLayers.includes(layer.id) ? getApp().selLayers : [layer.id] });
-        if (row.group === 'mask') setApp({ selMask: row.ref ?? null });
-        if (row.group === 'tracker' && row.ref) setTracking({ active: { compId: comp.id, layerId: layer.id, trackerId: row.ref } });
-        if (row.group === 'trackPoint' && row.ref) {
-          const tid = row.path?.split('.')[1];
-          if (tid) setTracking({ active: { compId: comp.id, layerId: layer.id, trackerId: tid }, activePoint: row.ref });
-        }
+        pick();
+      }}
+      onContextMenu={(e) => {
+        if (!target) return;
+        e.preventDefault();
+        e.stopPropagation();
+        pick();
+        openContextMenu(e.clientX, e.clientY, targetContextMenu(comp.id, target, row.label, rename));
       }}
       onDoubleClick={() => {
-        if (row.group === 'mask' || row.group === 'effect' || row.group === 'shapeGroup' || row.group === 'shapeItem' || row.group === 'animator' || row.group === 'selector' || row.group === 'tracker' || row.group === 'trackPoint') {
-          openDialog({
-            kind: 'rename', title: 'Rename', value: row.label, onSubmit: (v) => {
-              if (row.group === 'effect') A.setEffectField(comp.id, layer.id, row.ref!, { name: v });
-              else if (row.group === 'mask') A.setMaskFields(comp.id, layer.id, row.ref!, { name: v });
-              else if (row.path) A.setLayerPath(comp.id, layer.id, `${row.path}.name`, v);
-            },
-          });
-        }
+        if (target || row.group === 'trackPoint') openDialog({ kind: 'rename', title: 'Rename', value: row.label, onSubmit: rename });
       }}
     >
       <Twirl open={open} onClick={(e) => toggleKey(row.key, e)} />
@@ -484,5 +530,4 @@ export const GroupLeft = memo(function GroupLeft({ row, comp }: { row: Extract<R
       {extra}
     </div>
   );
-});
-
+}, (a, b) => a.row.key === b.row.key && a.row.layer === b.row.layer && a.row.label === b.row.label && a.row.depth === b.row.depth && a.comp.id === b.comp.id);

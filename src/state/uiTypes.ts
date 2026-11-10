@@ -40,9 +40,19 @@ export interface TimelineState {
   /** comp time at the left edge of the track area */
   scrollTime: number;
   graphEditor: boolean;
-  graphMode: 'value' | 'speed';
+  /** 'auto' picks the speed graph when every graphed property is spatial (Position…), else the value graph */
+  graphMode: 'auto' | 'value' | 'speed';
   leftWidth: number;
   showModes: boolean;
+}
+
+/** A timeline sub-item the user explicitly clicked (what Delete / Duplicate act on before layers). */
+export interface SelTarget {
+  kind: 'effect' | 'mask' | 'shapeItem' | 'textNode' | 'tracker';
+  layerId: string;
+  id: string;
+  /** dot path inside the layer (shape items, animators, selectors) */
+  path?: string;
 }
 
 export type RevealMode =

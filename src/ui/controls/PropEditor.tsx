@@ -11,6 +11,8 @@ import { setPropValue } from '../../state/actions';
 import { keyframedValue } from '../../anim/interpolate';
 import { toLayerTime } from '../../core/evaluate';
 import { Popover } from './Popover';
+import { beginTx, endTx } from '../../state/store';
+import { trackPointer } from '../pointer';
 
 export interface PropEditorProps {
   comp: Composition;
@@ -69,7 +71,12 @@ export function PropEditor({ comp, layer, path, prop, desc, value, time, wide }:
               step={(desc.softMax - desc.softMin) / 500}
               value={Math.min(desc.softMax, Math.max(desc.softMin, v))}
               style={{ ['--pct' as string]: `${Math.max(0, Math.min(100, pct))}%` }}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                // the whole slider drag is one undo step
+                beginTx();
+                trackPointer(e, () => {}, endTx);
+              }}
               onChange={(e) => set(Number(e.target.value))}
             />
           </div>
@@ -138,7 +145,7 @@ export function PropEditor({ comp, layer, path, prop, desc, value, time, wide }:
       return (
         <select className="mini-select" value={String(value ?? '')} onPointerDown={(e) => e.stopPropagation()} onChange={(e) => set(e.target.value)}>
           <option value="">None</option>
-          {comp.layers.filter((l) => l.id !== layer.id).map((l, i) => <option key={l.id} value={l.id}>{i + 1}. {l.name}</option>)}
+          {comp.layers.map((l, i) => (l.id === layer.id ? null : <option key={l.id} value={l.id}>{i + 1}. {l.name}</option>))}
         </select>
       );
     case 'gradient':

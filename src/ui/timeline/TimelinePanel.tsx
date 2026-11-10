@@ -1,7 +1,7 @@
 // The Timeline: layer outline + switches on the left, time ruler / work area / RAM cache bar,
 // layer duration bars and keyframes on the right (or the Graph Editor), virtualized rows.
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Search, Eye, ZoomIn, ZoomOut, Scan } from 'lucide-react';
 import type { Composition, Layer } from '../../core/types';
 import {
@@ -12,18 +12,19 @@ import { FrameEval, toCompTime, layerSpan } from '../../core/evaluate';
 import { exactFps, frameDuration, snapToFrame, formatTime } from '../../core/time';
 import * as A from '../../state/actions';
 import { buildRows, ROW_H, type Row } from './rows';
-import { ExprLeft, FieldLeft, GroupLeft, LayerLeft, PropLeft } from './TimelineLeft';
+import { ExprLeft, FieldLeft, GroupLeft, LayerLeft, PropLeft, type LayerDirEntry } from './TimelineLeft';
 import { KeyframeIcon, GraphIcon, ShyIcon, MotionBlurIcon } from '../icons';
 import { forEachAnimProp, getAt } from '../../core/props';
 import { LABEL_COLORS } from '../../math/color';
 import { cachedFrames } from '../../state/cache';
 import { cfgKey, getViewParams } from '../../state/engine';
-import { keyframeContextMenu, layerContextMenu } from '../menus/layerMenu';
+import { compContextMenu, keyframeContextMenu, layerContextMenu } from '../menus/layerMenu';
 import { TimeDisplay } from '../controls/TimeDisplay';
 import { GraphEditor } from './GraphEditor';
 import { scrubAt } from '../../audio/engine';
 import { useTracking, findTracker } from '../../state/tracking';
 import { rotoEffectOf } from '../../state/roto';
+import { trackPointer, useWheel, wheelDelta } from '../pointer';
 
 export function TimelinePanel() {
   const comp = useActiveComp();
@@ -112,7 +113,11 @@ function Timeline({ comp }: { comp: Composition }) {
   const pxPerSec = Math.max(1, tl.pxPerSec);
   const maxScroll = Math.max(0, comp.duration - trackW / pxPerSec);
   const scrollTime = Math.max(0, Math.min(maxScroll, tl.scrollTime));
-  const tm: TimeMap = { scrollTime, pxPerSec, x: (tt) => (tt - scrollTime) * pxPerSec, t: (x) => scrollTime + x / pxPerSec };
+  // stable identity while the view does not change, so memoised rows skip re-rendering on time ticks
+  const tm: TimeMap = useMemo(
+    () => ({ scrollTime, pxPerSec, x: (tt: number) => (tt - scrollTime) * pxPerSec, t: (x: number) => scrollTime + x / pxPerSec }),
+    [scrollTime, pxPerSec],
+  );
 
   // visible rows
   let start = 0;
@@ -190,15 +195,14 @@ function Timeline({ comp }: { comp: Composition }) {
           const near = snaps.reduce((b, s2) => (Math.abs(s2 - nt) < Math.abs(b - nt) ? s2 : b), Infinity);
           if (Math.abs(near - nt) * pxPerSec < 10) nt = near;
         }
-        A.retimeKeyframes(comp.id, orig, nt - grabbed);
+        A.retimeKeyframes(comp.id, orig, nt - grabbed, false);
       };
       const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-        if (moved) endTx();
+        if (!moved) return;
+        A.mergeKeyframeCollisions(comp.id, [...orig.keys()]);
+        endTx();
       };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
+      trackPointer(null, move, up);
       return;
     }
     if (barEl) {
@@ -243,12 +247,9 @@ function Timeline({ comp }: { comp: Composition }) {
         }
       };
       const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
         if (moved) endTx();
       };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
+      trackPointer(null, move, up);
       return;
     }
     // empty area: marquee keyframe selection
@@ -276,12 +277,9 @@ function Timeline({ comp }: { comp: Composition }) {
       setApp({ selKeys: [...keys] });
     };
     const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
       setMarquee(null);
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    trackPointer(null, move, up);
   };
 
   // ── layer reorder & pick whip ──
@@ -316,13 +314,10 @@ function Timeline({ comp }: { comp: Composition }) {
       }
     };
     const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
       setDropRow(null);
       if (dragging && dropIndex >= 0) A.reorderLayers(comp.id, getApp().selLayers, dropIndex);
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    trackPointer(null, move, up);
   };
 
   const onPickWhip = (_e: React.PointerEvent, layer: Layer) => {
@@ -334,21 +329,49 @@ function Timeline({ comp }: { comp: Composition }) {
       setDropRow(target ? rows.indexOf(r) : null);
     };
     const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
       setDropRow(null);
       if (target) A.setParent(comp.id, layer.id, target.id);
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    trackPointer(null, move, up);
   };
+
+  // Ctrl/⌘/Alt+wheel zooms time about the cursor, Shift+wheel (or a sideways swipe) scrolls time,
+  // a plain wheel scrolls the layer list. Non-passive: Ctrl+wheel must not zoom the browser page.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useWheel(rootRef, (e) => {
+    const r = rightRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const { dx, dy } = wheelDelta(e);
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      e.preventDefault();
+      zoomAround(Math.pow(1.002, -dy), Math.max(0, Math.min(trackW, e.clientX - r.left)));
+    } else if (e.shiftKey || Math.abs(dx) > Math.abs(dy)) {
+      e.preventDefault();
+      const d = e.shiftKey ? dy || dx : dx;
+      setTimeline(comp.id, { scrollTime: Math.max(0, Math.min(maxScroll, scrollTime + d / pxPerSec)) });
+    }
+  });
+
+  // handlers change identity every render; memoised layer rows get stable wrappers instead
+  const handlers = useRef({ onLayerPointerDown, onPickWhip });
+  handlers.current = { onLayerPointerDown, onPickWhip };
+  const stableLayerDown = useCallback((e: React.PointerEvent, l: Layer) => handlers.current.onLayerPointerDown(e, l), []);
+  const stablePickWhip = useCallback((e: React.PointerEvent, l: Layer) => handlers.current.onPickWhip(e, l), []);
+
+  // sibling directory for the parent / matte menus: keeps its identity until a layer is added, removed, renamed or moved
+  const dirCache = useRef<{ sig: string; dir: LayerDirEntry[] }>({ sig: '\u0000', dir: [] });
+  const layerDir = useMemo(() => {
+    const sig = comp.layers.map((l) => `${l.id}\u0001${l.name}\u0001${l.type}`).join('\u0002');
+    if (dirCache.current.sig !== sig) dirCache.current = { sig, dir: comp.layers.map((l, index) => ({ id: l.id, name: l.name, type: l.type, index })) };
+    return dirCache.current.dir;
+  }, [comp.layers]);
 
   const lw = tl.leftWidth;
   // zoom slider: 0 = whole comp fits, 1 = 400× closer
   const fitPps = Math.max(1, trackW - 20) / comp.duration;
   const zoomNorm = Math.max(0, Math.min(1, Math.log(pxPerSec / fitPps) / Math.log(400))) || 0;
   return (
-    <div className="timeline" style={{ ['--lw' as string]: `${lw}px` }}>
+    <div ref={rootRef} className="timeline" style={{ ['--lw' as string]: `${lw}px` }}>
       <div className="tl-top">
         <div className="tl-top-left">
           <TimeDisplay comp={comp} big />
@@ -389,26 +412,14 @@ function Timeline({ comp }: { comp: Composition }) {
             const x0 = e.clientX, w0 = lw;
             const move = (ev: PointerEvent) => setTimeline(comp.id, { leftWidth: Math.max(320, Math.min(900, w0 + ev.clientX - x0)) });
             const up = () => {
-              window.removeEventListener('pointermove', move);
-              window.removeEventListener('pointerup', up);
             };
-            window.addEventListener('pointermove', move);
-            window.addEventListener('pointerup', up);
+            trackPointer(null, move, up);
           }}
         />
         <div
           ref={scrollRef}
           className="tl-scroll"
           onScroll={(e) => setScrollTop((e.target as HTMLElement).scrollTop)}
-          onWheel={(e) => {
-            if (e.ctrlKey || e.metaKey || e.altKey) {
-              e.preventDefault();
-              const r = rightRef.current!.getBoundingClientRect();
-              zoomAround(Math.pow(1.002, -e.deltaY), Math.max(0, e.clientX - r.left));
-            } else if (e.shiftKey) {
-              setTimeline(comp.id, { scrollTime: Math.max(0, Math.min(maxScroll, scrollTime + (e.deltaY || e.deltaX) / pxPerSec)) });
-            }
-          }}
         >
           <div
             className="tl-inner"
@@ -425,7 +436,10 @@ function Timeline({ comp }: { comp: Composition }) {
             }}
             onContextMenu={(e) => {
               const target = e.target as HTMLElement;
-              if (tl.graphEditor || target.closest('.tl-left')) return;
+              // left cells and the graph editor open their own menus
+              if (target.closest('.tl-left')) return;
+              const onTracks = e.clientX >= rightRef.current!.getBoundingClientRect().left;
+              if (tl.graphEditor && onTracks) return;
               e.preventDefault();
               const kf = target.closest('[data-kf]') as HTMLElement | null;
               if (kf) {
@@ -434,17 +448,21 @@ function Timeline({ comp }: { comp: Composition }) {
                 return;
               }
               const bar = target.closest('[data-layer]') as HTMLElement | null;
-              if (bar) {
-                if (!getApp().selLayers.includes(bar.dataset.layer!)) A.selectLayers([bar.dataset.layer!]);
+              const { y } = localRight(e);
+              const row = y < totalH ? rowAtY(y) : undefined;
+              // a layer bar or the empty track of a layer row → that layer; anywhere else → the composition
+              const layerId = bar?.dataset.layer ?? (onTracks && row?.kind === 'layer' ? row.layer.id : null);
+              if (layerId) {
+                if (!getApp().selLayers.includes(layerId)) A.selectLayers([layerId]);
                 openContextMenu(e.clientX, e.clientY, layerContextMenu(comp.id, getApp().selLayers));
-              }
+              } else openContextMenu(e.clientX, e.clientY, compContextMenu());
             }}
           >
             {rows.slice(start, end).map((r, k) => {
               const i = start + k;
               return (
                 <div key={r.key} className={`tl-row k-${r.kind}${r.kind === 'layer' && selLayers.includes(r.layer.id) ? ' sel' : ''}`} style={{ top: offsets[i], height: r.h }}>
-                  <LeftCell row={r} comp={comp} fe={fe} t={t} showModes={tl.showModes} selected={r.kind === 'layer' && selLayers.includes(r.layer.id)} onLayerPointerDown={onLayerPointerDown} onPickWhip={onPickWhip} dropTarget={dropRow === i} />
+                  <LeftCell row={r} comp={comp} dir={layerDir} fe={fe} t={t} showModes={tl.showModes} selected={r.kind === 'layer' && selLayers.includes(r.layer.id)} onLayerPointerDown={stableLayerDown} onPickWhip={stablePickWhip} dropTarget={dropRow === i} />
                   {!tl.graphEditor && <TrackCell row={r} tm={tm} trackW={trackW} selKeys={selKeys} />}
                 </div>
               );
@@ -468,12 +486,6 @@ function Timeline({ comp }: { comp: Composition }) {
           {selKeys.length ? `${selKeys.length} keyframe${selKeys.length > 1 ? 's' : ''} selected` : selLayers.length ? `${selLayers.length} layer${selLayers.length > 1 ? 's' : ''} selected` : `${comp.layers.length} layers`}
         </span>
         <div className="grow" />
-        {tl.graphEditor && (
-          <div className="ge-mode">
-            <button className={`btn sm${tl.graphMode === 'value' ? ' primary' : ' ghost'}`} onClick={() => setTimeline(comp.id, { graphMode: 'value' })}>Value Graph</button>
-            <button className={`btn sm${tl.graphMode === 'speed' ? ' primary' : ' ghost'}`} onClick={() => setTimeline(comp.id, { graphMode: 'speed' })}>Speed Graph</button>
-          </div>
-        )}
         <button className="icon-btn" title="Zoom to fit comp" onClick={() => setTimeline(comp.id, { pxPerSec: fitPps, scrollTime: 0 })}><Scan size={13} /></button>
         <button className="icon-btn" title="Zoom out" onClick={() => zoomAround(1 / 1.5, trackW / 2)}><ZoomOut size={13} /></button>
         <input
@@ -498,14 +510,16 @@ function Timeline({ comp }: { comp: Composition }) {
   );
 }
 
-function LeftCell(props: { row: Row; comp: Composition; fe: FrameEval; t: number; showModes: boolean; selected: boolean; onLayerPointerDown: (e: React.PointerEvent, l: Layer) => void; onPickWhip: (e: React.PointerEvent, l: Layer) => void; dropTarget: boolean }) {
-  const { row } = props;
+type LeftCellProps = { row: Row; comp: Composition; dir: LayerDirEntry[]; fe: FrameEval; t: number; showModes: boolean; selected: boolean; onLayerPointerDown: (e: React.PointerEvent, l: Layer) => void; onPickWhip: (e: React.PointerEvent, l: Layer) => void; dropTarget: boolean };
+
+function LeftCell({ row, comp, dir, fe, t, showModes, selected, onLayerPointerDown, onPickWhip, dropTarget }: LeftCellProps) {
   switch (row.kind) {
-    case 'layer': return <LayerLeft {...props} />;
-    case 'prop': return <PropLeft row={row} comp={props.comp} fe={props.fe} t={props.t} />;
-    case 'group': return <GroupLeft row={row} comp={props.comp} />;
-    case 'field': return <FieldLeft row={row} comp={props.comp} />;
-    case 'expr': return <ExprLeft row={row} comp={props.comp} />;
+    // layer rows show nothing time-dependent: keeping `fe` / `t` away from them lets React.memo hold during playback
+    case 'layer': return <LayerLeft row={row} comp={comp} dir={dir} showModes={showModes} selected={selected} onLayerPointerDown={onLayerPointerDown} onPickWhip={onPickWhip} dropTarget={dropTarget} />;
+    case 'prop': return <PropLeft row={row} comp={comp} fe={fe} t={t} />;
+    case 'group': return <GroupLeft row={row} comp={comp} />;
+    case 'field': return <FieldLeft row={row} comp={comp} />;
+    case 'expr': return <ExprLeft row={row} comp={comp} />;
   }
 }
 
@@ -574,7 +588,7 @@ const TrackCell = memo(function TrackCell({ row, tm, trackW, selKeys }: { row: R
     );
   }
   return <div className="tl-track" />;
-});
+}, (a, b) => a.row.key === b.row.key && a.row.layer === b.row.layer && a.row.kind === b.row.kind && a.tm === b.tm && a.trackW === b.trackW && a.selKeys === b.selKeys);
 
 function Playhead({ comp, tm, trackW }: { comp: Composition; tm: TimeMap; trackW: number }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -703,24 +717,18 @@ function Ruler({ comp, tm, trackW }: { comp: Composition; tm: TimeMap; trackW: n
         }
       };
       const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
         endTx();
       };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
+      trackPointer(null, move, up);
       return;
     }
     timeStore.setState({ scrubbing: true });
     scrubTo(comp, x, tm);
     const move = (ev: PointerEvent) => scrubTo(comp, ev.clientX - r.left, tm);
     const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
       timeStore.setState({ scrubbing: false });
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    trackPointer(null, move, up);
   };
   return (
     <canvas
@@ -833,11 +841,8 @@ function Navigator({ comp, tm, trackW }: { comp: Composition; tm: TimeMap; track
       }
     };
     const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    trackPointer(null, move, up);
   };
   return (
     <div className="tl-nav">

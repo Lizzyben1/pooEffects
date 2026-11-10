@@ -1,9 +1,9 @@
 // Context menus for layers and keyframes.
 
-import type { MenuItem } from '../../state/uiTypes';
-import { commands as C, MOD, SHIFT, ALT, newLayer, startTracking } from '../commands';
-import { getApp, openDialog, setApp } from '../../state/store';
-import type { BlendMode } from '../../core/types';
+import type { MenuItem, SelTarget } from '../../state/uiTypes';
+import { commands as C, MOD, SHIFT, ALT, deleteTarget, newLayer, startTracking } from '../commands';
+import { getApp, openDialog, setApp, setTimeline } from '../../state/store';
+import type { AnimProp, BlendMode, Layer, PropDescriptor } from '../../core/types';
 import * as A from '../../state/actions';
 import { effectsSubmenu } from './menus';
 import { LABEL_COLORS } from '../../math/color';
@@ -28,26 +28,77 @@ export const BLEND_GROUPS: BlendMode[][] = [
   ['stencilAlpha', 'stencilLuma', 'silhouetteAlpha', 'silhouetteLuma', 'alphaAdd', 'luminescentPremul'],
 ];
 
+/** Right-click on empty timeline / viewer space: things you can do to the composition. */
+export function compContextMenu(): MenuItem[] {
+  const clip = A.clipboardKind();
+  return [
+    { label: 'New', submenu: [
+      { label: 'Text', shortcut: `${MOD}${ALT}${SHIFT}T`, action: C.newText },
+      { label: 'Solid…', shortcut: `${MOD}Y`, action: C.newSolid },
+      { label: 'Shape Layer', action: C.newShape },
+      { label: 'Null Object', shortcut: `${MOD}${ALT}${SHIFT}Y`, action: C.newNull },
+      { label: 'Adjustment Layer', shortcut: `${MOD}${ALT}Y`, action: C.newAdjustment },
+      { label: 'Camera', shortcut: `${MOD}${ALT}${SHIFT}C`, action: C.newCamera },
+      { label: 'Light', submenu: (['point', 'spot', 'parallel', 'ambient'] as const).map((k) => ({ label: `${k[0].toUpperCase()}${k.slice(1)} Light`, action: () => newLayer(k) })) },
+    ] },
+    { label: 'Composition Settings…', shortcut: `${MOD}K`, action: C.compSettings },
+    { label: 'Add Marker', shortcut: `${SHIFT}8`, action: C.addMarker },
+    { separator: true },
+    { label: clip === 'keyframes' ? 'Paste Keyframes' : 'Paste', shortcut: `${MOD}V`, disabled: !clip, action: C.paste },
+    { label: 'Select All', shortcut: `${MOD}A`, action: C.selectAll },
+    { separator: true },
+    { label: 'Add to Render Queue', shortcut: `${MOD}M`, action: C.addToRenderQueue },
+    { label: 'Save Frame As PNG', shortcut: `${MOD}${ALT}S`, action: C.saveFrame },
+  ];
+}
+
+/** Right-click on a property row. */
+export function propContextMenu(compId: string, layer: Layer, path: string, prop: AnimProp, desc: PropDescriptor): MenuItem[] {
+  const animatable = desc.animatable !== false;
+  const numeric = desc.kind !== 'text' && desc.kind !== 'bool' && desc.kind !== 'enum' && desc.kind !== 'layer' && desc.kind !== 'curves';
+  const hasKeys = prop.keyframes.length > 0;
+  const keysOf = () => prop.keyframes.map((k) => `${layer.id}|${path}|${k.id}`);
+  return [
+    { label: hasKeys ? 'Add / Remove Keyframe Here' : 'Add Keyframe (Start Animating)', disabled: !animatable, action: () => A.toggleKeyframeAtCTI(compId, layer.id, path) },
+    { label: 'Remove All Keyframes', disabled: !hasKeys, action: () => A.toggleStopwatch(compId, layer.id, path) },
+    { label: 'Select All Keyframes', disabled: !hasKeys, action: () => setApp({ selKeys: keysOf(), selLayers: [layer.id] }) },
+    { separator: true },
+    {
+      label: prop.expression !== undefined ? 'Remove Expression' : 'Add Expression',
+      disabled: !animatable,
+      action: () => {
+        A.setExpression(compId, layer.id, path, prop.expression !== undefined ? null : 'value');
+        setApp((s) => ({ expanded: { ...s.expanded, [`${layer.id}|expr|${path}`]: true } }));
+      },
+    },
+    {
+      label: 'Show in Graph Editor',
+      disabled: !hasKeys || !numeric,
+      action: () => {
+        setApp({ selProps: [`${layer.id}|${path}`], selLayers: [layer.id] });
+        setTimeline(compId, { graphEditor: true });
+      },
+    },
+  ];
+}
+
+/** Right-click on an effect / mask / shape item / animator row. */
+export function targetContextMenu(compId: string, target: SelTarget, name: string, rename: (v: string) => void): MenuItem[] {
+  const items: MenuItem[] = [{ label: 'Rename…', action: () => openDialog({ kind: 'rename', title: 'Rename', value: name, onSubmit: rename }) }];
+  if (target.kind === 'effect') {
+    items.push(
+      { label: 'Duplicate', shortcut: `${MOD}D`, action: () => A.duplicateEffect(compId, target.layerId, target.id) },
+      { label: 'Reset', action: () => A.resetEffect(compId, target.layerId, target.id) },
+    );
+  }
+  items.push({ separator: true }, { label: 'Delete', shortcut: 'Del', danger: true, action: () => deleteTarget(compId, target) });
+  return items;
+}
+
 export function layerContextMenu(compId: string, ids: string[]): MenuItem[] {
   const comp = getApp().project.comps[compId];
   const first = comp?.layers.find((l) => l.id === ids[0]);
-  if (!comp || !first) {
-    return [
-      { label: 'New', submenu: [
-        { label: 'Text', action: () => newLayer('text') },
-        { label: 'Solid…', action: C.newSolid },
-        { label: 'Shape Layer', action: () => newLayer('shape') },
-        { label: 'Null Object', action: () => newLayer('null') },
-        { label: 'Adjustment Layer', action: () => newLayer('adjustment') },
-        { label: 'Camera', action: () => newLayer('camera') },
-        { label: 'Light', action: () => newLayer('point') },
-      ] },
-      { label: 'Composition Settings…', action: C.compSettings },
-      { separator: true },
-      { label: 'Paste', shortcut: `${MOD}V`, action: C.paste },
-      { label: 'Select All', shortcut: `${MOD}A`, action: C.selectAll },
-    ];
-  }
+  if (!comp || !first) return compContextMenu();
   const blendItems: MenuItem[] = [];
   BLEND_GROUPS.forEach((g, gi) => {
     if (gi) blendItems.push({ separator: true });
@@ -130,7 +181,10 @@ export function layerContextMenu(compId: string, ids: string[]): MenuItem[] {
     { label: 'Rename', action: () => openDialog({ kind: 'rename', title: 'Rename Layer', value: first.name, onSubmit: (v) => A.setLayerFields(compId, [first.id], { name: v }) }) },
     { label: 'Duplicate', shortcut: `${MOD}D`, action: C.duplicate },
     { label: 'Split Layer', shortcut: `${MOD}${SHIFT}D`, action: C.split },
+    { separator: true },
+    { label: 'Cut', shortcut: `${MOD}X`, action: C.cut },
     { label: 'Copy', shortcut: `${MOD}C`, action: C.copy },
+    { label: 'Paste', shortcut: `${MOD}V`, disabled: !A.clipboardKind(), action: C.paste },
     { label: 'Delete', shortcut: 'Del', danger: true, action: () => A.deleteLayers(compId, ids) },
   );
   return items;

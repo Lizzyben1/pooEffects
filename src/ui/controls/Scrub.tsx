@@ -68,19 +68,38 @@ export function Scrub({
   const [text, setText] = useState('');
   const drag = useRef<{ startX: number; lastX: number; curVal: number; moved: boolean; pid: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const closed = useRef(false);
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
 
   useEffect(() => {
     if (editing) {
+      closed.current = false;
       inputRef.current?.focus();
       inputRef.current?.select();
     }
   }, [editing]);
 
+  /** End the gesture: a drag closes its undo step, a plain click (when `click`) opens the text field. */
+  const finish = (click: boolean) => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    document.body.style.cursor = '';
+    if (d.moved) {
+      if (!noTx) endTx();
+    } else if (click) {
+      setText(formatNumber(value, precision));
+      setEditing(true);
+    }
+  };
+
   if (editing) {
+    // Enter / Tab / blur commit once; Escape discards (the unmount may still deliver a blur)
     const commit = () => {
+      if (closed.current) return;
+      closed.current = true;
       const v = parse(text, value);
-      if (v !== null) onChange(clamp(v));
+      if (v !== null && v !== value) onChange(clamp(v));
       setEditing(false);
     };
     return (
@@ -93,8 +112,10 @@ export function Scrub({
         onKeyDown={(e) => {
           e.stopPropagation();
           if (e.key === 'Enter') commit();
-          else if (e.key === 'Escape') setEditing(false);
-          else if (e.key === 'Tab') commit();
+          else if (e.key === 'Escape') {
+            closed.current = true;
+            setEditing(false);
+          } else if (e.key === 'Tab') commit();
         }}
         onBlur={commit}
         onPointerDown={(e) => e.stopPropagation()}
@@ -128,18 +149,11 @@ export function Scrub({
         onChange(d.curVal);
       }}
       onPointerUp={(e) => {
-        const d = drag.current;
-        drag.current = null;
         (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-        document.body.style.cursor = '';
-        if (!d) return;
-        if (d.moved) {
-          if (!noTx) endTx();
-        } else {
-          setText(formatNumber(value, precision));
-          setEditing(true);
-        }
+        finish(true);
       }}
+      onPointerCancel={() => finish(false)}
+      onLostPointerCapture={() => finish(false)}
       onDoubleClick={(e) => e.stopPropagation()}
     >
       {format ? format(value) : formatNumber(value, precision)}

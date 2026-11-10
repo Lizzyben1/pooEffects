@@ -7,7 +7,7 @@ import {
   Timer, Unlink, Upload, Download, Check, X, Cpu, ListVideo,
 } from 'lucide-react';
 import type { Composition, Ease, Keyframe, RGBA } from '../../core/types';
-import { closeDialog, getApp, refOf, setPrefs, toast, useApp } from '../../state/store';
+import { beginTx, closeDialog, endTx, getApp, refOf, setPrefs, toast, useApp } from '../../state/store';
 import type { DialogState, Preferences, RenderQueueItem } from '../../state/uiTypes';
 import * as A from '../../state/actions';
 import { createSolidLayer } from '../../core/factory';
@@ -493,12 +493,15 @@ function VelocityDialog({ compId }: { compId: string }) {
     }
   };
   const submit = () => {
+    // the whole dialog is one undo step
+    beginTx();
     for (const key of selKeys) {
       for (let i = 0; i < dims; i++) {
-        A.setKeyframeEase(compId, key, 'in', i, inE[i] ?? inE[0], false);
-        A.setKeyframeEase(compId, key, 'out', i, outE[i] ?? outE[0], false);
+        A.setKeyframeEase(compId, key, 'in', i, inE[i] ?? inE[0], false, continuous);
+        A.setKeyframeEase(compId, key, 'out', i, outE[i] ?? outE[0], false, continuous);
       }
     }
+    endTx();
     closeDialog();
   };
   const side = (label: string, which: 'in' | 'out', list: Ease[]) => (

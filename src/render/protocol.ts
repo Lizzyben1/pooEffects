@@ -2,6 +2,7 @@
 
 import type { Project, RGBA } from '../core/types';
 import type { RenderOptions } from './renderer';
+import type { Patch } from '../core/sync';
 
 export type RenderPurpose = 'view' | 'cache' | 'thumb' | 'analysis';
 
@@ -31,7 +32,10 @@ export interface ExportJob {
 
 export type ToWorker =
   | { type: 'init'; fonts: FontSpec[] }
-  | { type: 'project'; project: Project }
+  /** whole document; `rev` numbers the sync stream */
+  | { type: 'project'; project: Project; rev?: number }
+  /** incremental edit on top of revision `base` (see core/sync.ts) */
+  | { type: 'projectPatch'; patches: Patch[]; base: number; rev: number }
   | { type: 'image'; id: string; bitmap: ImageBitmap }
   | { type: 'video'; id: string; blob: Blob }
   | { type: 'audio'; id: string; channels: Float32Array[]; sampleRate: number }
@@ -87,4 +91,6 @@ export type FromWorker =
   | { type: 'exportDone'; jobId: string; blob: Blob; filename: string }
   | { type: 'exportError'; jobId: string; message: string }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
-  | { type: 'mediaStats'; stats: Record<string, VideoDecodeStats> };
+  | { type: 'mediaStats'; stats: Record<string, VideoDecodeStats> }
+  /** a patch could not be applied (revision gap): the UI thread replies with the whole project */
+  | { type: 'needProject' };

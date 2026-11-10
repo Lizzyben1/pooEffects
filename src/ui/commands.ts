@@ -17,8 +17,8 @@ import { buildDemoProject, ensureProceduralMedia } from '../demo';
 import { clearAll as clearCache } from '../state/cache';
 import { WORKSPACES } from './dock/workspaces';
 import { ensurePanel } from './dock/layout';
-import { getTracking, stopTracking } from '../state/tracking';
-import type { PanelId } from '../state/uiTypes';
+import { deleteTracker, getTracking, stopTracking } from '../state/tracking';
+import type { PanelId, SelTarget } from '../state/uiTypes';
 import type { LightKind, TextAnimatorPropKey } from '../core/types';
 import { host, renderOptions, getViewParams } from '../state/engine';
 import { FrameEval, layerSourceSize } from '../core/evaluate';
@@ -57,6 +57,48 @@ function needSel(): [string, string[]] | null {
     return null;
   }
   return [c, s];
+}
+
+function needKeys(): string[] | null {
+  if (!needComp()) return null;
+  const k = getApp().selKeys;
+  if (!k.length) {
+    toast('Select one or more keyframes first', 'warn');
+    return null;
+  }
+  return k;
+}
+
+/** The timeline sub-item (effect, mask, shape item…) the user picked, if it still exists on a layer of the active comp. */
+export function currentTarget(): SelTarget | null {
+  const s = getApp();
+  const c = comp();
+  const t = s.selTarget;
+  if (!c || !t) return null;
+  const l = c.layers.find((x) => x.id === t.layerId);
+  if (!l) return null;
+  switch (t.kind) {
+    case 'effect': return l.effects.some((e) => e.id === t.id) ? t : null;
+    case 'mask': return l.masks.some((m) => m.id === t.id) ? t : null;
+    case 'tracker': return l.trackers?.some((x) => x.id === t.id) ? t : null;
+    default: return t.path ? t : null;
+  }
+}
+
+export function deleteTarget(compId: string, t: SelTarget): void {
+  switch (t.kind) {
+    case 'effect': A.removeEffect(compId, t.layerId, t.id); break;
+    case 'mask': A.removeMask(compId, t.layerId, t.id); break;
+    case 'shapeItem': if (t.path) A.removeShapeItem(compId, t.layerId, t.path); break;
+    case 'textNode': if (t.path) A.removeTextNode(compId, t.layerId, t.path); break;
+    case 'tracker': deleteTracker(compId, t.layerId, t.id); break;
+  }
+  setApp((s) => ({
+    selTarget: null,
+    selEffect: s.selEffect === t.id ? null : s.selEffect,
+    selMask: s.selMask === t.id ? null : s.selMask,
+    selShapeItem: s.selShapeItem === t.id ? null : s.selShapeItem,
+  }));
 }
 
 const SOLID_COLORS = ['#1b1f2a', '#ff9b3f', '#4f9dff', '#3ddc84', '#b48cff', '#ff5d6c'];
@@ -263,6 +305,12 @@ export const commands = {
   copy: () => A.copySelection(),
   paste: () => A.paste(),
   duplicate: () => {
+    const c = comp();
+    const t = currentTarget();
+    if (c && t?.kind === 'effect') {
+      A.duplicateEffect(c.id, t.layerId, t.id);
+      return;
+    }
     const ns = needSel();
     if (ns) A.duplicateLayers(ns[0], ns[1]);
   },
@@ -270,6 +318,7 @@ export const commands = {
     const ns = needSel();
     if (ns) A.splitLayers(ns[0], ns[1]);
   },
+  /** Delete what the user last picked: project items, keyframes, a timeline sub-item (effect, mask, shape…), else the layers. */
   delete: () => {
     const s = getApp();
     const c = comp();
@@ -278,7 +327,9 @@ export const commands = {
       return;
     }
     if (!c) return;
+    const t = currentTarget();
     if (s.selKeys.length) A.deleteKeyframes(s.selKeys);
+    else if (t) deleteTarget(c.id, t);
     else if (s.selEffect && s.focusedPanel === 'effectControls') {
       const l = c.layers.find((x) => x.effects.some((e) => e.id === s.selEffect));
       if (l) A.removeEffect(c.id, l.id, s.selEffect);
@@ -417,18 +468,40 @@ export const commands = {
     if (ns) A.moveLayersTo(ns[0], ns[1], 'out');
   },
   // animation
-  easyEase: () => A.easyEase(getApp().selKeys, 'both'),
-  easeIn: () => A.easyEase(getApp().selKeys, 'in'),
-  easeOut: () => A.easyEase(getApp().selKeys, 'out'),
-  interpLinear: () => A.setKeyframeInterpolation(getApp().selKeys, 'linear'),
-  interpBezier: () => A.setKeyframeInterpolation(getApp().selKeys, 'bezier'),
-  interpAuto: () => A.setKeyframeInterpolation(getApp().selKeys, 'auto'),
-  interpHold: () => A.setKeyframeInterpolation(getApp().selKeys, 'hold'),
+  easyEase: () => {
+    const k = needKeys();
+    if (k) A.easyEase(k, 'both');
+  },
+  easeIn: () => {
+    const k = needKeys();
+    if (k) A.easyEase(k, 'in');
+  },
+  easeOut: () => {
+    const k = needKeys();
+    if (k) A.easyEase(k, 'out');
+  },
+  interpLinear: () => {
+    const k = needKeys();
+    if (k) A.setKeyframeInterpolation(k, 'linear');
+  },
+  interpBezier: () => {
+    const k = needKeys();
+    if (k) A.setKeyframeInterpolation(k, 'bezier');
+  },
+  interpAuto: () => {
+    const k = needKeys();
+    if (k) A.setKeyframeInterpolation(k, 'auto');
+  },
+  interpHold: () => {
+    const k = needKeys();
+    if (k) A.toggleHold(k);
+  },
   keyframeVelocity: () => {
     const id = needComp();
-    if (id && getApp().selKeys.length) openDialog({ kind: 'keyframeVelocity', compId: id });
+    if (id && needKeys()) openDialog({ kind: 'keyframeVelocity', compId: id });
   },
   revealKeyframes: () => A.revealKeyframes(),
+  revealModified: () => A.revealModified(),
   addKeyframe: (path: string) => {
     const ns = needSel();
     if (ns) for (const id of ns[1]) A.addKeyframeAt(ns[0], id, path);
@@ -441,6 +514,10 @@ export const commands = {
   goEnd: () => {
     const c = comp();
     if (c) A.goToTime(c.id, c.duration);
+  },
+  addMarker: () => {
+    const id = needComp();
+    if (id) A.addCompMarker(id);
   },
   workAreaStart: () => {
     const c = comp();

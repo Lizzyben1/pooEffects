@@ -8,6 +8,7 @@ import { DropOverlay, Splash, Toasts } from './shell/Overlays';
 import { installKeymap } from './shell/keymap';
 import { getApp, useApp } from '../state/store';
 import { hexToRgba } from '../math/color';
+import { installFocusRelease } from './pointer';
 
 /** Re-tint the UI from the highlight-color preference (all accent styles derive from these variables). */
 function useHighlightColor(): void {
@@ -27,6 +28,7 @@ function useHighlightColor(): void {
 
 export function App() {
   useEffect(() => installKeymap(), []);
+  useEffect(() => installFocusRelease(), []);
   useHighlightColor();
   useEffect(() => {
     // app-like right click everywhere except editable fields

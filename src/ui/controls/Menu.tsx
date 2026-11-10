@@ -11,7 +11,8 @@ export function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () =>
     <div className="menu">
       {items.map((it, i) => {
         if (it.separator) return <div key={i} className="menu-sep" />;
-        const hasSub = !!it.submenu?.length;
+        // a greyed-out item neither runs nor opens its submenu
+        const hasSub = !!it.submenu?.length && !it.disabled;
         return (
           <div
             key={i}
@@ -36,7 +37,7 @@ export function MenuList({ items, onClose }: { items: MenuItem[]; onClose: () =>
             <span className="mi-check">{it.checked ? <Check size={12} strokeWidth={3} /> : null}</span>
             <span className="mi-label">{it.label}</span>
             {it.shortcut && <span className="mi-shortcut">{it.shortcut}</span>}
-            {hasSub && <ChevronRight size={12} className="mi-arrow" />}
+            {!!it.submenu?.length && <ChevronRight size={12} className="mi-arrow" />}
           </div>
         );
       })}

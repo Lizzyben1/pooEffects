@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { CurvesValue, Vec2 } from '../../core/types';
 import { sampleCurve } from '../../render/effects/kit';
 import { beginTx, endTx } from '../../state/store';
+import { trackPointer } from '../pointer';
 
 type Ch = keyof CurvesValue;
 const CH_COLORS: Record<Ch, string> = { rgb: '#e8ecf3', r: '#ff5d6c', g: '#3ddc84', b: '#4f9dff', a: '#a0a8b8' };
@@ -108,12 +109,9 @@ export function CurvesEditor({ value, onChange }: { value: CurvesValue; onChange
             onChange({ ...value, [ch]: pts.map((p) => [p[0], p[1]] as Vec2) });
           };
           const up = () => {
-            window.removeEventListener('pointermove', move);
-            window.removeEventListener('pointerup', up);
             endTx();
           };
-          window.addEventListener('pointermove', move);
-          window.addEventListener('pointerup', up);
+          trackPointer(null, move, up);
         }}
         onDoubleClick={(e) => {
           const q = toPt(e);

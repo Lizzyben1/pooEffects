@@ -14,6 +14,7 @@ import { clearTextCaches } from '../text/layout';
 import { runExport } from '../export/exporter';
 import type { Composition, RGBA } from '../core/types';
 import type { AnalysisReply, AnalysisRequest } from '../cv/protocol';
+import { applyPatches } from '../core/sync';
 
 interface Job {
   id: number;
@@ -36,6 +37,8 @@ export class RenderServer {
   private renderer: Renderer | null = null;
   private assets: WorkerAssets;
   private project: Project | null = null;
+  private projectRev = 0;
+  private resyncAsked = false;
   private queue: Job[] = [];
   private pumping = false;
   private exporting: { jobId: string; cancelled: boolean } | null = null;
@@ -105,8 +108,31 @@ export class RenderServer {
       }
       case 'project':
         this.project = msg.project;
+        this.projectRev = msg.rev ?? 0;
+        this.resyncAsked = false;
         this.renderer?.setProject(msg.project);
         break;
+      case 'projectPatch': {
+        // patches only make sense on the exact revision they were computed against
+        if (!this.project || msg.base !== this.projectRev) {
+          if (!this.resyncAsked) {
+            this.resyncAsked = true;
+            this.post({ type: 'needProject' });
+          }
+          break;
+        }
+        try {
+          this.project = applyPatches(this.project, msg.patches);
+          this.projectRev = msg.rev;
+          this.renderer?.setProject(this.project);
+        } catch (e) {
+          this.projectRev = -1;
+          this.resyncAsked = true;
+          this.post({ type: 'log', level: 'warn', message: `Project sync fell back to a full copy (${(e as Error).message})` });
+          this.post({ type: 'needProject' });
+        }
+        break;
+      }
       case 'image':
         this.assets.setImage(msg.id, msg.bitmap);
         break;

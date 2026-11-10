@@ -20,7 +20,7 @@ import {
   createWigglySelector, type CompOptions,
 } from '../core/factory';
 import { FrameEval, layerSourceSize, stretchFactor, toCompTime, toLayerTime } from '../core/evaluate';
-import { keyframedValue, defaultEases, EASY_EASE_INFLUENCE, autoSpeed, isNumArray, easeDims } from '../anim/interpolate';
+import { keyframedValue, defaultEases, EASY_EASE_INFLUENCE, effectiveEase, easeDims } from '../anim/interpolate';
 import { frameDuration, snapToFrame } from '../core/time';
 import * as M from '../math/mat4';
 import { getEffectDef, resolveDefault } from '../effects/catalog';
@@ -193,8 +193,12 @@ export function deleteKeyframes(keys: string[], compId = getApp().activeCompId):
   setApp((s) => ({ selKeys: s.selKeys.filter((k) => !keys.includes(k)) }));
 }
 
-/** Retime keyframes from original comp times by dt (used by drags inside a transaction). */
-export function retimeKeyframes(compId: string, orig: Map<string, number>, dt: number): void {
+/**
+ * Retime keyframes from their original comp times by dt (drags call this repeatedly inside a transaction).
+ * `merge`: a moved keyframe that lands on a stationary one replaces it. Drags pass false and call
+ * `mergeKeyframeCollisions` once on release — otherwise merely dragging PAST a keyframe would delete it.
+ */
+export function retimeKeyframes(compId: string, orig: Map<string, number>, dt: number, merge = true): void {
   const comp = getApp().project.comps[compId];
   if (!comp) return;
   doc((d) => {
@@ -217,10 +221,36 @@ export function retimeKeyframes(compId: string, orig: Map<string, number>, dt: n
         const k = p.keyframes.find((x) => x.id === m.kfId);
         if (k) k.t = toLayerTime(L, snapToFrame(m.t, comp.frameRate));
       }
-      // a moved keyframe landing on a stationary one replaces it
-      const tol = halfFrame(compId) * 0.5;
-      p.keyframes = p.keyframes.filter((k) => movedIds.has(k.id) || !p.keyframes.some((o) => movedIds.has(o.id) && Math.abs(o.t - k.t) < tol));
+      if (merge) dropCollisions(p, movedIds, halfFrame(compId) * 0.5);
       p.keyframes.sort((a, b) => a.t - b.t);
+    }
+  });
+}
+
+/** Remove stationary keyframes that share a time with one of the moved ones. */
+function dropCollisions(p: Draft<AnimProp>, movedIds: Set<string>, tol: number): void {
+  p.keyframes = p.keyframes.filter((k) => movedIds.has(k.id) || !p.keyframes.some((o) => movedIds.has(o.id) && Math.abs(o.t - k.t) < tol));
+}
+
+/** End of a keyframe drag: the moved keyframes replace any they were dropped onto. */
+export function mergeKeyframeCollisions(compId: string, keys: string[]): void {
+  const groups = new Map<string, Set<string>>();
+  for (const k of keys) {
+    const r = refOf(k);
+    const pk = propKey(r.layerId, r.path);
+    if (!groups.has(pk)) groups.set(pk, new Set());
+    groups.get(pk)!.add(r.kfId);
+  }
+  const tol = halfFrame(compId) * 0.5;
+  doc((d) => {
+    for (const [pk, ids] of groups) {
+      const [layerId, path] = pk.split('|');
+      const layer = layerOf(d, compId, layerId);
+      const p = layer ? (getAt(layer, path) as Draft<AnimProp> | undefined) : undefined;
+      if (!p || !isAnimProp(p)) continue;
+      const n = p.keyframes.length;
+      dropCollisions(p, ids, tol);
+      if (p.keyframes.length === n) continue;
     }
   });
 }
@@ -262,17 +292,27 @@ export function setKeyframeInterpolation(keys: string[], temporal: TemporalInter
         if (temporal === 'hold') {
           kf.outType = 'hold';
         } else {
-          kf.inType = temporal;
-          kf.outType = temporal;
           if (temporal === 'bezier' || temporal === 'continuous') {
+            // keep the curve as it is: store the eases the keyframe is effectively using, then expose them as handles
             const P = plain(p) as AnimProp;
             const dims = easeDims(kf.v as PropValue, isSpatial);
-            const sc = (k: Keyframe, dd: number) => (typeof k.v === 'number' ? (k.v as number) : isNumArray(k.v) ? (k.v as number[])[dd] ?? 0 : P.keyframes.indexOf(k));
-            const eases: Ease[] = [];
-            for (let dd = 0; dd < dims; dd++) eases.push({ speed: isSpatial ? 0 : autoSpeed(P.keyframes, idx, dd, sc), influence: EASY_EASE_INFLUENCE });
-            kf.easeIn = eases.map((e) => ({ ...e })) as never;
-            kf.easeOut = eases.map((e) => ({ ...e })) as never;
+            const eIn: Ease[] = [], eOut: Ease[] = [];
+            for (let dd = 0; dd < dims; dd++) {
+              const a = effectiveEase(P.keyframes, idx, 'in', dd, isSpatial), b = effectiveEase(P.keyframes, idx, 'out', dd, isSpatial);
+              if (temporal === 'continuous') {
+                // one speed through the keyframe: the mean of both sides (the only side at the ends)
+                const sp = idx === 0 ? b.speed : idx === P.keyframes.length - 1 ? a.speed : (a.speed + b.speed) / 2;
+                a.speed = sp;
+                b.speed = sp;
+              }
+              eIn.push(a);
+              eOut.push(b);
+            }
+            kf.easeIn = eIn as never;
+            kf.easeOut = eOut as never;
           }
+          kf.inType = temporal;
+          kf.outType = temporal;
         }
       }
       if (targetSpatial && (kf.spatial !== undefined || isSpatial)) {
@@ -300,6 +340,33 @@ export function setKeyframeInterpolation(keys: string[], temporal: TemporalInter
   });
 }
 
+/** Ctrl+Alt+H: make the selected keyframes hold; if they all hold already, release them again. */
+export function toggleHold(keys: string[], compId = getApp().activeCompId): void {
+  if (!compId || !keys.length) return;
+  const comp = getApp().project.comps[compId];
+  if (!comp) return;
+  let allHold = true;
+  for (const k of keys) {
+    const r = refOf(k);
+    const layer = comp.layers.find((l) => l.id === r.layerId);
+    const kf = layer ? getProp(layer, r.path)?.keyframes.find((x) => x.id === r.kfId) : undefined;
+    if (kf && kf.outType !== 'hold') allHold = false;
+  }
+  if (!allHold) {
+    setKeyframeInterpolation(keys, 'hold', undefined, compId);
+    return;
+  }
+  doc((d) => {
+    forEachSelectedKf(keys, compId, d, (kf) => {
+      // values that cannot interpolate (text, booleans…) always hold
+      const v = kf.v as unknown;
+      if (typeof v === 'string' || typeof v === 'boolean') return;
+      kf.outType = kf.inType === 'hold' ? 'linear' : kf.inType;
+      if (kf.inType === 'hold') kf.inType = 'linear';
+    });
+  });
+}
+
 export function easyEase(keys: string[], which: 'both' | 'in' | 'out', compId = getApp().activeCompId): void {
   if (!compId || !keys.length) return;
   doc((d) => {
@@ -318,19 +385,41 @@ export function easyEase(keys: string[], which: 'both' | 'in' | 'out', compId = 
   });
 }
 
-/** Graph editor: edit one side's ease of one keyframe dimension. */
-export function setKeyframeEase(compId: string, key: string, side: 'in' | 'out', dim: number, ease: Ease, coalesce = true): void {
+/**
+ * Edit one side's ease of one keyframe dimension (graph editor handles, Keyframe Velocity dialog).
+ * `link`: true joins the incoming and outgoing speed (continuous), false splits them, undefined keeps
+ * the keyframe's current state.
+ */
+export function setKeyframeEase(compId: string, key: string, side: 'in' | 'out', dim: number, ease: Ease, coalesce = true, link?: boolean): void {
   doc((d) => {
-    forEachSelectedKf([key], compId, d, (kf) => {
+    forEachSelectedKf([key], compId, d, (kf, p, idx, layer, path) => {
+      const linked = link ?? (kf.inType === 'continuous' || kf.outType === 'continuous');
+      // A side that is not Bézier yet (linear / auto) stores stale eases. Before it becomes Bézier, write
+      // down the eases it is effectively using — for every dimension — so only the edited one changes.
+      const P = plain(p) as AnimProp;
+      const spatial = !!getDescriptor(plain(layer) as Layer, path).spatial;
+      const dims = easeDims(kf.v as PropValue, spatial);
+      for (const sd of linked ? (['in', 'out'] as const) : [side]) {
+        const type = sd === 'in' ? kf.inType : kf.outType;
+        if (type === 'bezier' || type === 'continuous' || (sd === 'out' && type === 'hold')) continue;
+        const eff: Ease[] = [];
+        for (let dd = 0; dd < dims; dd++) eff.push(effectiveEase(P.keyframes, idx, sd, dd, spatial));
+        if (sd === 'in') kf.easeIn = eff as never;
+        else kf.easeOut = eff as never;
+      }
       const list = (side === 'in' ? kf.easeIn : kf.easeOut) as Ease[];
       while (list.length <= dim) list.push({ speed: 0, influence: EASY_EASE_INFLUENCE });
       list[dim] = { speed: ease.speed, influence: Math.max(0.001, Math.min(1, ease.influence)) };
-      if (side === 'in') kf.inType = kf.inType === 'continuous' ? 'continuous' : 'bezier';
-      else kf.outType = kf.outType === 'continuous' ? 'continuous' : 'bezier';
-      if (kf.inType === 'continuous' || kf.outType === 'continuous') {
+      // a held keyframe stays held on its outgoing side: editing velocities must not silently release it
+      if (linked) {
+        kf.inType = 'continuous';
+        if (kf.outType !== 'hold') kf.outType = 'continuous';
         const other = (side === 'in' ? kf.easeOut : kf.easeIn) as Ease[];
         while (other.length <= dim) other.push({ speed: 0, influence: EASY_EASE_INFLUENCE });
         other[dim] = { ...other[dim], speed: ease.speed };
+      } else {
+        if (side === 'in' || kf.inType === 'continuous') kf.inType = 'bezier';
+        if ((side === 'out' || kf.outType === 'continuous') && kf.outType !== 'hold') kf.outType = 'bezier';
       }
     });
   }, coalesce ? { coalesce: `ease:${key}` } : {});
@@ -338,6 +427,15 @@ export function setKeyframeEase(compId: string, key: string, side: 'in' | 'out',
 
 export function setKeyframeValue(compId: string, key: string, value: PropValue): void {
   doc((d) => forEachSelectedKf([key], compId, d, (kf) => (kf.v = clone(value) as never)), { coalesce: `kfv:${key}` });
+}
+
+/** Set several keyframe values in one edit (graph editor drags with a multi-selection). */
+export function setKeyframeValues(compId: string, values: Map<string, PropValue>): void {
+  if (!values.size) return;
+  doc((d) => forEachSelectedKf([...values.keys()], compId, d, (kf, _p, _i, layer, path) => {
+    const v = values.get(keyOf({ layerId: layer.id, path, kfId: kf.id }));
+    if (v !== undefined) kf.v = clone(v) as never;
+  }));
 }
 
 export function setSpatialTangents(compId: string, key: string, ti: number[] | null, to: number[] | null, breakLink: boolean): void {
@@ -387,6 +485,11 @@ interface ClipLayers {
   layers: Layer[];
 }
 let clipboard: ClipKeyframes | ClipLayers | null = null;
+
+/** What Paste would insert, for menu states. */
+export function clipboardKind(): 'keyframes' | 'layers' | null {
+  return clipboard?.kind ?? null;
+}
 
 export function copySelection(): void {
   const s = getApp();
@@ -1393,7 +1496,7 @@ export function selectAllLayers(): void {
 }
 
 export function deselectAll(): void {
-  setApp({ selLayers: [], selKeys: [], selProps: [], selEffect: null, selMask: null, selShapeItem: null });
+  setApp({ selLayers: [], selKeys: [], selProps: [], selEffect: null, selMask: null, selShapeItem: null, selTarget: null });
 }
 
 export function selectAllKeyframes(layerIds?: string[]): void {
@@ -1443,6 +1546,12 @@ export function revealKeyframes(): void {
     if (double) return { reveal: { kind: 'modified' } };
     return { reveal: s.reveal.kind === 'keyframes' || s.reveal.kind === 'modified' ? { kind: 'none' } : { kind: 'keyframes' } };
   });
+  setTimelineRevealExpand();
+}
+
+/** UU: show every property that differs from its default. */
+export function revealModified(): void {
+  setApp((s) => ({ reveal: s.reveal.kind === 'modified' ? { kind: 'none' } : { kind: 'modified' } }));
   setTimelineRevealExpand();
 }
 

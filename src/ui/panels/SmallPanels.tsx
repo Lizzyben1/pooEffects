@@ -4,7 +4,7 @@ import {
   TextAlignStart, TextAlignCenter, TextAlignEnd, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal,
   AlignCenterHorizontal, AlignEndHorizontal, Cpu, MonitorPlay, MemoryStick,
 } from 'lucide-react';
-import { getApp, useActiveComp, useApp, viewerOf, setViewer } from '../../state/store';
+import { beginTx, endTx, getApp, useActiveComp, useApp, viewerOf, setViewer } from '../../state/store';
 import { usePlaying, useTimeState, getTime } from '../../state/time';
 import { togglePlay, isLooping, setLoop, isMuted, toggleMute } from '../../state/playback';
 import * as A from '../../state/actions';
@@ -200,6 +200,8 @@ function alignLayers(comp: Composition, ids: string[], op: AlignOp, toComp: bool
   const box = toComp || items.length < 2
     ? { x0: 0, x1: comp.width, y0: 0, y1: comp.height }
     : { x0: Math.min(...items.map((i) => i.x0)), x1: Math.max(...items.map((i) => i.x1)), y0: Math.min(...items.map((i) => i.y0)), y1: Math.max(...items.map((i) => i.y1)) };
+  // one Align click is one undo step, however many layers it moves
+  beginTx();
   for (const it of items) {
     let dx = 0, dy = 0;
     if (op === 'left') dx = box.x0 - it.x0;
@@ -216,6 +218,7 @@ function alignLayers(comp: Composition, ids: string[], op: AlignOp, toComp: bool
     const cur = (p.keyframes.length ? keyframedValue(p, toLayerTime(it.l, t), true) : p.value) as number[];
     A.setPropValue(comp.id, it.l.id, 'transform.position', [cur[0] + d[0], cur[1] + d[1], cur[2] ?? 0]);
   }
+  endTx();
 }
 
 export function AlignPanel() {

@@ -19,7 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { AnimProp, BezierPath, Ease, GradientStop, Keyframe, PropValue } from '../core/types';
-import { buildArcTable, bezierPoint, cubic, paramAtLength, solveCubicForX, type ArcTable } from '../math/bezier';
+import { buildArcTable, bezierPoint, cubic, cubicDeriv, paramAtLength, solveCubicForX, type ArcTable } from '../math/bezier';
 
 export const LINEAR_INFLUENCE = 1 / 6;
 export const AUTO_INFLUENCE = 1 / 6;
@@ -294,6 +294,84 @@ export function speedAt(prop: AnimProp, t: number, spatial: boolean): number[] {
   const v = velocityAt(prop, t, spatial);
   if (spatial) return [Math.hypot(...v)];
   return v;
+}
+
+// ── effective eases ─────────────────────────────────────────────────────────
+
+/** Scalar that easing acts on for segment `a` of a spatial property: distance along the motion path. */
+function spatialScalar(kfs: Keyframe[], a: number): { v1: number; scalarOf: (k: Keyframe) => number } {
+  const L = spatialSegment(kfs, a).table.total;
+  const rel = new Map<Keyframe, number>();
+  rel.set(kfs[a], 0);
+  rel.set(kfs[a + 1], L);
+  if (a > 0) rel.set(kfs[a - 1], -spatialSegment(kfs, a - 1).table.total);
+  if (a + 2 < kfs.length) rel.set(kfs[a + 2], L + spatialSegment(kfs, a + 1).table.total);
+  return { v1: L, scalarOf: (k) => rel.get(k) ?? 0 };
+}
+
+/**
+ * The ease a keyframe side really uses, whatever its interpolation type: the stored ease for Bézier
+ * keyframes, the implied one (segment slope, 1/6 influence) for linear / auto / hold. Speeds are in
+ * property units per layer second (distance per second for spatial properties).
+ * Editors show and start dragging from these values so that converting a side to Bézier never jumps.
+ */
+export function effectiveEase(kfs: Keyframe[], i: number, side: 'in' | 'out', d: number, spatial: boolean): Ease {
+  const k = kfs[i];
+  const type = side === 'in' ? k.inType : k.outType;
+  if (type === 'bezier' || type === 'continuous') {
+    const e = easeAt(side === 'in' ? k.easeIn : k.easeOut, d);
+    return { speed: e.speed, influence: e.influence };
+  }
+  const a = side === 'out' ? i : i - 1;
+  if (a < 0 || a >= kfs.length - 1) return { speed: 0, influence: LINEAR_INFLUENCE };
+  const k0 = kfs[a], k1 = kfs[a + 1];
+  const dt = k1.t - k0.t;
+  if (dt <= 0 || k0.outType === 'hold') return { speed: 0, influence: LINEAR_INFLUENCE };
+  const { v0, v1, scalarOf } = segmentScalar(kfs, a, d, spatial);
+  const c = segmentControls(kfs, a, d, v0, v1, scalarOf);
+  if (side === 'out') return { influence: c.x1, speed: (c.y1 - v0) / (c.x1 * dt) };
+  const influence = 1 - c.x2;
+  return { influence, speed: (v1 - c.y2) / (influence * dt) };
+}
+
+/** The scalar that the temporal ease of segment `a` interpolates, for dimension `d`. */
+function segmentScalar(kfs: Keyframe[], a: number, d: number, spatial: boolean): { v0: number; v1: number; scalarOf: (k: Keyframe, d: number) => number } {
+  const k0 = kfs[a], k1 = kfs[a + 1];
+  if (spatial && isNumArray(k0.v)) {
+    const sp = spatialScalar(kfs, a);
+    return { v0: 0, v1: sp.v1, scalarOf: sp.scalarOf };
+  }
+  if (typeof k0.v === 'number') return { v0: k0.v, v1: k1.v as number, scalarOf: scalarNum };
+  if (isNumArray(k0.v)) {
+    const v0 = k0.v[d] ?? 0;
+    return { v0, v1: (k1.v as number[])[d] ?? v0, scalarOf: scalarDim };
+  }
+  return { v0: a, v1: a + 1, scalarOf: (kf) => kfs.indexOf(kf) };
+}
+
+/**
+ * Exact speed (units per layer second; distance per second for spatial properties) inside segment `a`
+ * at layer time `t`: the slope of the segment's temporal Bézier. Smooth where a numerical derivative of
+ * the evaluated value is noisy, and never blurred across a keyframe.
+ */
+export function segmentSpeed(kfs: Keyframe[], a: number, t: number, d: number, spatial: boolean): number {
+  const k0 = kfs[a], k1 = kfs[a + 1];
+  if (!k0 || !k1 || k0.outType === 'hold') return 0;
+  const dt = k1.t - k0.t;
+  if (dt <= 0) return 0;
+  const { v0, v1, scalarOf } = segmentScalar(kfs, a, d, spatial);
+  if (k0.outType === 'linear' && (k1.inType === 'linear' || k1.inType === 'hold')) return (v1 - v0) / dt;
+  const c = segmentControls(kfs, a, d, v0, v1, scalarOf);
+  const x = Math.min(1, Math.max(0, (t - k0.t) / dt));
+  let u = solveCubicForX(0, c.x1, c.x2, 1, x);
+  let dx = cubicDeriv(0, c.x1, c.x2, 1, u);
+  // a handle at full influence makes the time curve momentarily vertical: step just inside
+  if (Math.abs(dx) < 1e-6) {
+    u = Math.min(1 - 1e-3, Math.max(1e-3, u));
+    dx = cubicDeriv(0, c.x1, c.x2, 1, u);
+    if (Math.abs(dx) < 1e-9) return 0;
+  }
+  return cubicDeriv(v0, c.y1, c.y2, v1, u) / (dx * dt);
 }
 
 // ── keyframe construction helpers ───────────────────────────────────────────

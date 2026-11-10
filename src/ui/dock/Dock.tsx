@@ -9,6 +9,7 @@ import { getApp, setApp, useApp, openContextMenu } from '../../state/store';
 import { activatePanel, movePanel, removePanel, setSizes, type DropZone } from './layout';
 import { PANELS } from '../panels/registry';
 import { WORKSPACES } from './workspaces';
+import { trackPointer } from '../pointer';
 
 interface DragState {
   panel: PanelId;
@@ -91,13 +92,10 @@ function SplitView({ node }: { node: Extract<DockNode, { type: 'split' }> }) {
       setApp((s) => ({ layout: setSizes(s.layout, node.id, next) }));
     };
     const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
       setDragIdx(null);
       window.dispatchEvent(new Event('resize'));
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    trackPointer(null, move, up);
   };
   return (
     <div ref={ref} className={`dock-split ${node.dir}`}>
@@ -137,10 +135,8 @@ function startTabDrag(panel: PanelId, e: React.PointerEvent) {
     }
     dragSetter?.({ panel, x: ev.clientX, y: ev.clientY, target });
   };
-  const up = (ev: PointerEvent) => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    if (active) {
+  const up = (ev: PointerEvent | null) => {
+    if (active && ev) {
       const els = document.elementsFromPoint(ev.clientX, ev.clientY);
       const g = els.find((el) => (el as HTMLElement).dataset?.groupId) as HTMLElement | undefined;
       if (g && g.dataset.groupId !== '__max') {
@@ -151,8 +147,7 @@ function startTabDrag(panel: PanelId, e: React.PointerEvent) {
     }
     dragSetter?.(null);
   };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
+  trackPointer(null, move, up);
 }
 
 export function closePanel(panel: PanelId) {

@@ -1,10 +1,10 @@
 // Menubar definitions built from the command registry.
 
 import type { MenuItem } from '../../state/uiTypes';
-import { ALT, MOD, SHIFT, addTextAnimator, commands as C, newLayer, setTool, setWorkspace, startTracking, togglePanel } from '../commands';
+import { ALT, MOD, SHIFT, addTextAnimator, commands as C, currentTarget, newLayer, setTool, setWorkspace, startTracking, togglePanel } from '../commands';
 import { activeComp, getApp, setViewer, viewerOf } from '../../state/store';
 import { EFFECT_CATEGORIES, EFFECTS } from '../../effects/catalog';
-import { addEffectToSelection } from '../../state/actions';
+import { addEffectToSelection, clipboardKind } from '../../state/actions';
 import { WORKSPACES } from '../dock/workspaces';
 import { PANELS } from '../panels/registry';
 import type { PanelId, Resolution } from '../../state/uiTypes';
@@ -16,6 +16,25 @@ const v = () => {
   return c ? viewerOf(getApp(), c.id) : null;
 };
 
+/** Grey out a group of items (their submenus stay closed) when its precondition is not met. */
+const gate = (off: boolean, items: MenuItem[]): MenuItem[] => (off ? items.map((it) => (it.separator ? it : { ...it, disabled: true })) : items);
+
+/** What is available right now — drives the greyed-out state of menu items. */
+function avail() {
+  const s = getApp();
+  const c = activeComp();
+  const layers = c ? c.layers.filter((l) => s.selLayers.includes(l.id)) : [];
+  return {
+    comp: !!c,
+    layers: layers.length > 0,
+    textLayer: layers.some((l) => l.type === 'text'),
+    keys: !!c && s.selKeys.length > 0,
+    target: !!currentTarget(),
+    items: s.focusedPanel === 'project' && s.selItems.length > 0,
+    clip: !!clipboardKind(),
+  };
+}
+
 export function effectsSubmenu(): MenuItem[] {
   return EFFECT_CATEGORIES.map((cat) => ({
     label: cat,
@@ -26,7 +45,9 @@ export function effectsSubmenu(): MenuItem[] {
 export const MENUS: { label: string; items: () => MenuItem[] }[] = [
   {
     label: 'File',
-    items: () => [
+    items: () => {
+      const a = avail();
+      return [
       { label: 'New Project', shortcut: `${MOD}${ALT}N`, action: C.newProject },
       { label: 'Open Project…', shortcut: `${MOD}O`, action: C.openProject },
       { label: 'Save Project', shortcut: `${MOD}S`, action: C.save },
@@ -34,28 +55,31 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
       { label: 'Import File…', shortcut: `${MOD}I`, action: C.importFile },
       { label: 'Load Demo Project', action: C.loadDemo },
       { separator: true },
-      { label: 'Export / Add to Render Queue', shortcut: `${MOD}M`, action: C.addToRenderQueue },
-      { label: 'Quick Export…', shortcut: `${MOD}${SHIFT}E`, action: C.export },
-      { label: 'Save Frame As PNG', shortcut: `${MOD}${ALT}S`, action: C.saveFrame },
-    ],
+      { label: 'Export / Add to Render Queue', shortcut: `${MOD}M`, disabled: !a.comp, action: C.addToRenderQueue },
+      { label: 'Quick Export…', shortcut: `${MOD}${SHIFT}E`, disabled: !a.comp, action: C.export },
+      { label: 'Save Frame As PNG', shortcut: `${MOD}${ALT}S`, disabled: !a.comp, action: C.saveFrame },
+      ];
+    },
   },
   {
     label: 'Edit',
     items: () => {
       const s = getApp();
+      const a = avail();
+      const any = a.layers || a.keys || a.target || a.items;
       return [
         { label: 'Undo', shortcut: `${MOD}Z`, action: C.undo, disabled: !s.past.length },
         { label: 'Redo', shortcut: `${MOD}${SHIFT}Z`, action: C.redo, disabled: !s.future.length },
         { separator: true },
-        { label: 'Cut', shortcut: `${MOD}X`, action: C.cut },
-        { label: 'Copy', shortcut: `${MOD}C`, action: C.copy },
-        { label: 'Paste', shortcut: `${MOD}V`, action: C.paste },
-        { label: 'Duplicate', shortcut: `${MOD}D`, action: C.duplicate },
-        { label: 'Split Layer', shortcut: `${MOD}${SHIFT}D`, action: C.split },
-        { label: 'Delete', shortcut: 'Del', action: C.delete },
+        { label: 'Cut', shortcut: `${MOD}X`, disabled: !(a.layers || a.keys), action: C.cut },
+        { label: 'Copy', shortcut: `${MOD}C`, disabled: !(a.layers || a.keys), action: C.copy },
+        { label: 'Paste', shortcut: `${MOD}V`, disabled: !a.clip || !a.comp, action: C.paste },
+        { label: 'Duplicate', shortcut: `${MOD}D`, disabled: !(a.layers || a.target), action: C.duplicate },
+        { label: 'Split Layer', shortcut: `${MOD}${SHIFT}D`, disabled: !a.layers, action: C.split },
+        { label: 'Delete', shortcut: 'Del', disabled: !any, action: C.delete },
         { separator: true },
-        { label: 'Select All', shortcut: `${MOD}A`, action: C.selectAll },
-        { label: 'Deselect All', shortcut: `${MOD}${SHIFT}A`, action: C.deselectAll },
+        { label: 'Select All', shortcut: `${MOD}A`, disabled: !a.comp, action: C.selectAll },
+        { label: 'Deselect All', shortcut: `${MOD}${SHIFT}A`, disabled: !any, action: C.deselectAll },
         { separator: true },
         { label: 'Preferences…', action: C.prefs },
         { label: 'Keyboard Shortcuts', shortcut: 'F1', action: C.shortcuts },
@@ -64,23 +88,29 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
   },
   {
     label: 'Composition',
-    items: () => [
-      { label: 'New Composition…', shortcut: `${MOD}N`, action: C.newComp },
-      { label: 'Composition Settings…', shortcut: `${MOD}K`, action: C.compSettings },
-      { separator: true },
-      { label: 'Preview (Play / Stop)', shortcut: 'Space', action: C.play },
-      { label: 'Set Work Area Start', shortcut: 'B', action: C.workAreaStart },
-      { label: 'Set Work Area End', shortcut: 'N', action: C.workAreaEnd },
-      { label: 'Trim Comp to Work Area', action: C.trimComp },
-      { separator: true },
-      { label: 'Add to Render Queue', shortcut: `${MOD}M`, action: C.addToRenderQueue },
-      { label: 'Save Frame As PNG', shortcut: `${MOD}${ALT}S`, action: C.saveFrame },
-    ],
+    items: () => {
+      const off = !avail().comp;
+      return [
+        { label: 'New Composition…', shortcut: `${MOD}N`, action: C.newComp },
+        { label: 'Composition Settings…', shortcut: `${MOD}K`, disabled: off, action: C.compSettings },
+        { separator: true },
+        { label: 'Preview (Play / Stop)', shortcut: 'Space', disabled: off, action: C.play },
+        { label: 'Set Work Area Start', shortcut: 'B', disabled: off, action: C.workAreaStart },
+        { label: 'Set Work Area End', shortcut: 'N', disabled: off, action: C.workAreaEnd },
+        { label: 'Trim Comp to Work Area', disabled: off, action: C.trimComp },
+        { label: 'Add Marker', shortcut: `${SHIFT}8`, disabled: off, action: C.addMarker },
+        { separator: true },
+        { label: 'Add to Render Queue', shortcut: `${MOD}M`, disabled: off, action: C.addToRenderQueue },
+        { label: 'Save Frame As PNG', shortcut: `${MOD}${ALT}S`, disabled: off, action: C.saveFrame },
+      ];
+    },
   },
   {
     label: 'Layer',
-    items: () => [
-      {
+    items: () => {
+      const a = avail();
+      return [
+      ...gate(!a.comp, [{
         label: 'New',
         submenu: [
           { label: 'Text', shortcut: `${MOD}${ALT}${SHIFT}T`, action: C.newText },
@@ -91,7 +121,8 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
           { label: 'Shape Layer', action: C.newShape },
           { label: 'Adjustment Layer', shortcut: `${MOD}${ALT}Y`, action: C.newAdjustment },
         ],
-      },
+      }]),
+      ...gate(!a.layers, [
       { label: 'Layer Settings…', shortcut: `${MOD}${SHIFT}Y`, action: C.layerSettings },
       { separator: true },
       { label: 'New Mask', shortcut: `${MOD}${SHIFT}N`, action: C.newMask },
@@ -134,7 +165,9 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
           { label: 'Send Layer to Back', shortcut: `${MOD}${SHIFT}[`, action: C.sendToBack },
         ],
       },
-    ],
+      ]),
+      ];
+    },
   },
   {
     label: 'Effect',
@@ -142,13 +175,15 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
       { label: 'Effect Controls', shortcut: 'F3', action: () => togglePanel('effectControls') },
       { label: 'Effects & Presets', shortcut: `${MOD}5`, action: () => togglePanel('effects') },
       { separator: true },
-      ...effectsSubmenu(),
+      ...gate(!avail().layers, effectsSubmenu()),
     ],
   },
   {
     label: 'Animation',
-    items: () => [
-      {
+    items: () => {
+      const a = avail();
+      return [
+      ...gate(!a.layers, [{
         label: 'Add Keyframe',
         submenu: [
           { label: 'Anchor Point', shortcut: `${ALT}${SHIFT}A`, action: () => C.addKeyframe('transform.anchor') },
@@ -157,14 +192,15 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
           { label: 'Rotation', shortcut: `${ALT}${SHIFT}R`, action: () => C.addKeyframe('transform.rotation') },
           { label: 'Opacity', shortcut: `${ALT}${SHIFT}T`, action: () => C.addKeyframe('transform.opacity') },
         ],
-      },
+      }]),
+      ...gate(!a.keys, [
       {
         label: 'Keyframe Interpolation',
         submenu: [
           { label: 'Linear', action: C.interpLinear },
           { label: 'Bezier', action: C.interpBezier },
           { label: 'Auto Bezier', action: C.interpAuto },
-          { label: 'Hold', shortcut: `${MOD}${ALT}H`, action: C.interpHold },
+          { label: 'Toggle Hold', shortcut: `${MOD}${ALT}H`, action: C.interpHold },
         ],
       },
       { label: 'Keyframe Velocity…', shortcut: `${MOD}${SHIFT}K`, action: C.keyframeVelocity },
@@ -176,14 +212,16 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
           { label: 'Easy Ease Out', shortcut: `${MOD}${SHIFT}F9`, action: C.easeOut },
         ],
       },
-      {
+      ]),
+      ...gate(!a.textLayer, [{
         label: 'Animate Text',
         submenu: (['position', 'scale', 'rotation', 'opacity', 'fillColor', 'tracking', 'blur', 'skew'] as const).map((k) => ({
           label: { position: 'Position', scale: 'Scale', rotation: 'Rotation', opacity: 'Opacity', fillColor: 'Fill Color', tracking: 'Tracking', blur: 'Blur', skew: 'Skew' }[k],
           action: () => addTextAnimator(k),
         })),
-      },
+      }]),
       { separator: true },
+      ...gate(!a.comp, [
       { label: 'Track Camera', action: () => startTracking('camera') },
       { label: 'Track Motion', action: () => startTracking('transform') },
       { label: 'Stabilize Motion', action: () => startTracking('stabilize') },
@@ -191,8 +229,10 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
       { label: 'Roto Brush (SAM 2)', shortcut: `${ALT}W`, action: () => startTracking('roto') },
       { separator: true },
       { label: 'Reveal Properties with Keyframes', shortcut: 'U', action: C.revealKeyframes },
-      { label: 'Reveal Modified Properties', shortcut: 'UU', action: () => { C.revealKeyframes(); C.revealKeyframes(); } },
-    ],
+      { label: 'Reveal Modified Properties', shortcut: 'UU', action: C.revealModified },
+      ]),
+      ];
+    },
   },
   {
     label: 'View',

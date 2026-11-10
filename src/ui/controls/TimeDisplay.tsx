@@ -13,8 +13,10 @@ export function TimeDisplay({ comp, big = false }: { comp: Composition; big?: bo
   const [edit, setEdit] = useState(false);
   const [text, setText] = useState('');
   const ref = useRef<HTMLInputElement>(null);
+  const closed = useRef(false);
   useEffect(() => {
     if (edit) {
+      closed.current = false;
       ref.current?.focus();
       ref.current?.select();
     }
@@ -22,6 +24,8 @@ export function TimeDisplay({ comp, big = false }: { comp: Composition; big?: bo
   const label = formatTime(t, comp.frameRate, comp.dropFrame, settings.timeDisplay, settings.frameStart);
   if (edit) {
     const commit = () => {
+      if (closed.current) return;
+      closed.current = true;
       const v = parseTimeInput(text, comp.frameRate, comp.dropFrame, t);
       if (v !== null) goToTime(comp.id, v);
       setEdit(false);
@@ -35,7 +39,10 @@ export function TimeDisplay({ comp, big = false }: { comp: Composition; big?: bo
         onKeyDown={(e) => {
           e.stopPropagation();
           if (e.key === 'Enter') commit();
-          if (e.key === 'Escape') setEdit(false);
+          if (e.key === 'Escape') {
+            closed.current = true;
+            setEdit(false);
+          }
         }}
         onBlur={commit}
       />

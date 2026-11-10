@@ -5,6 +5,7 @@ import type { Project, RGBA } from '../core/types';
 import type { ExportJob, FontSpec, FromWorker, RenderPurpose, ToWorker, VideoDecodeStats, WorkerCaps } from './protocol';
 import type { RenderOptions } from './renderer';
 import type { RenderServer } from './server';
+import { diffTree } from '../core/sync';
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -35,6 +36,8 @@ export class RenderHost {
   private pending = new Map<number, Pending>();
   private nextId = 1;
   private lastProject: Project | null = null;
+  /** revision of the document the worker holds (0 = nothing sent yet) */
+  private syncedRev = 0;
   private exports = new Map<string, ExportListener>();
   private fonts: FontSpec[];
   private readyResolve!: (c: WorkerCaps) => void;
@@ -169,13 +172,33 @@ export class RenderHost {
       case 'mediaStats':
         this.onMediaStats(m.stats);
         break;
+      case 'needProject':
+        this.sendWholeProject();
+        break;
     }
   }
 
+  /**
+   * Sync the document to the server. A worker receives the first project whole and every later edit
+   * as patches (structural sharing makes the diff proportional to the edit, not the project), so a
+   * drag does not re-serialise the entire document on each pointer move.
+   */
   setProject(p: Project): void {
     if (p === this.lastProject) return;
+    const prev = this.lastProject;
     this.lastProject = p;
-    this.post({ type: 'project', project: p });
+    if (this.worker && prev && this.syncedRev > 0) {
+      const patches = diffTree(prev, p);
+      if (patches) {
+        if (patches.length) this.post({ type: 'projectPatch', patches, base: this.syncedRev, rev: ++this.syncedRev });
+        return;
+      }
+    }
+    this.sendWholeProject();
+  }
+
+  private sendWholeProject(): void {
+    if (this.lastProject) this.post({ type: 'project', project: this.lastProject, rev: ++this.syncedRev });
   }
 
   render(key: string, purpose: RenderPurpose, opts: RenderOptions, bg: RGBA | null, maxSize?: number): Promise<FrameResult | null> {

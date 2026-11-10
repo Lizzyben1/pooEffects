@@ -32,6 +32,7 @@ import { customEye } from '../../render/projection';
 import { camPointsInRect, drawTrackOverlay, featureCenterAt, hitTrack, screenToLayer, type TrackHit } from './trackOverlay';
 import { createAtTrackPoints, editTrackPoint, findTracker, getTracking, isTrackable, setGroundPlane, setTracking, useTracking } from '../../state/tracking';
 import { addRotoPoint, useRoto } from '../../state/roto';
+import { trackPointer, useWheel, wheelDelta } from '../pointer';
 
 interface Props {
   comp: Composition;
@@ -303,34 +304,34 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     if (!isActivePane) setViewer(comp.id, { activeView: index });
   };
 
-  const drag = (onMove: (e: PointerEvent) => void, onUp?: (e: PointerEvent) => void, tx = true) => {
+  /** Run a viewer drag. Always ends (release, cancel, lost focus); Escape reverts it. */
+  const drag = (onMove: (e: PointerEvent) => void, onUp?: (e: PointerEvent | null) => void, tx = true) => {
     if (tx) beginTx();
-    const move = (e: PointerEvent) => {
+    let reverted = false;
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      reverted = true;
+      stop();
+    };
+    const stop = trackPointer(null, (e) => {
       onMove(e);
       paintOverlay();
-    };
-    const up = (e: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('keydown', esc);
-      onUp?.(e);
-      if (tx) endTx();
-      paintOverlay();
-    };
-    const esc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-        window.removeEventListener('keydown', esc);
+    }, (e) => {
+      window.removeEventListener('keydown', esc, true);
+      if (reverted) {
         if (tx) cancelTx();
         ov.current.marquee = null;
         ov.current.shapeDraft = null;
-        paintOverlay();
+        trackMarquee.current = null;
+        loupe.current = null;
+      } else {
+        onUp?.(e);
+        if (tx) endTx();
       }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('keydown', esc);
+      paintOverlay();
+    });
+    window.addEventListener('keydown', esc, true);
   };
 
   /** cursor (screen) → world point on a plane, or comp point for 2D layers */
@@ -1116,16 +1117,23 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     });
   };
 
-  const onWheel = (e: React.WheelEvent) => {
+  // wheel zooms about the cursor; Shift+wheel (or a horizontal swipe) pans. Non-passive so that
+  // Ctrl/⌘+wheel and trackpad pinches zoom the viewer instead of the browser page.
+  useWheel(wrap, (e) => {
+    e.preventDefault();
     const [sx, sy] = local(e);
-    if (viewRef.current.kind !== 'active' && viewRef.current.kind !== 'custom' && e.altKey) return;
-    if (e.shiftKey && !e.ctrlKey) {
-      setViewer(comp.id, { panX: viewer.panX - e.deltaY });
+    const { dx, dy } = wheelDelta(e);
+    const v = getApp().viewers[comp.id] ?? viewer;
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      setViewer(comp.id, { panX: v.panX - (dy || dx) });
       return;
     }
-    const f = Math.pow(1.0018, -e.deltaY * (e.ctrlKey ? 3 : 1));
-    zoomAt(sx, sy, f);
-  };
+    if (!dy) {
+      if (dx) setViewer(comp.id, { panX: v.panX - dx });
+      return;
+    }
+    zoomAt(sx, sy, Math.pow(1.0018, -dy * (e.ctrlKey || e.metaKey ? 3 : 1)));
+  });
 
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -1171,7 +1179,6 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onDoubleClick={onDoubleClick}
-      onWheel={onWheel}
       onContextMenu={onContextMenu}
     >
       <canvas ref={imgCanvas} className="view-canvas" style={{ width: size.w, height: size.h }} />

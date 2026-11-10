@@ -6,6 +6,7 @@ import { hsvToRgb, rgbToHsv, rgbaToCss, rgbaToHex, hexToRgba } from '../../math/
 import type { RGBA } from '../../core/types';
 import { Popover } from './Popover';
 import { beginTx, endTx } from '../../state/store';
+import { trackPointer } from '../pointer';
 
 const SWATCHES = ['#ffffff', '#000000', '#ff9b3f', '#ff5d6c', '#ffd34d', '#3ddc84', '#4f9dff', '#b48cff', '#ff6ad5', '#2ee6d6', '#7a4a2a', '#1d2433'];
 
@@ -15,12 +16,9 @@ function dragOn(el: HTMLElement, e: React.PointerEvent, fn: (fx: number, fy: num
   apply(e.clientX, e.clientY);
   const move = (ev: PointerEvent) => apply(ev.clientX, ev.clientY);
   const up = () => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
     onEnd();
   };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
+  trackPointer(null, move, up);
 }
 
 export function ColorPickerPanel({ value, onChange, alpha = true }: { value: RGBA; onChange: (c: RGBA) => void; alpha?: boolean }) {

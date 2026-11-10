@@ -9,6 +9,7 @@ import * as A from '../../state/actions';
 import { getMedia, onMediaChange } from '../../state/media';
 import { formatTime } from '../../core/time';
 import { LayerTypeIcon } from '../icons';
+import { trackPointer } from '../pointer';
 
 const COMP_W = 240;
 const COMP_H = 96;
@@ -212,15 +213,7 @@ export function FlowchartPanel() {
     if (e.button !== 0 && e.button !== 1) return;
     const sx = e.clientX, sy = e.clientY;
     const v0 = view;
-    const el = e.currentTarget as HTMLElement;
-    el.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => setView({ ...v0, x: v0.x + ev.clientX - sx, y: v0.y + ev.clientY - sy });
-    const up = () => {
-      el.removeEventListener('pointermove', move);
-      el.removeEventListener('pointerup', up);
-    };
-    el.addEventListener('pointermove', move);
-    el.addEventListener('pointerup', up);
+    trackPointer(e, (ev) => setView({ ...v0, x: v0.x + ev.clientX - sx, y: v0.y + ev.clientY - sy }));
   };
 
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));

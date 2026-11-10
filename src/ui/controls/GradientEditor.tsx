@@ -7,6 +7,7 @@ import { ColorPickerPanel } from './ColorPicker';
 import { Popover } from './Popover';
 import { beginTx, endTx } from '../../state/store';
 import { GRADIENT_PRESETS } from '../../effects/catalog';
+import { trackPointer } from '../pointer';
 
 export function gradientCss(stops: GradientStop[]): string {
   const s = [...stops].sort((a, b) => a.p - b.p);
@@ -64,14 +65,12 @@ export function GradientEditor({ value, onChange }: { value: GradientStop[]; onC
                 const p = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
                 onChange(stops.map((x, j) => (j === i ? { ...x, p } : x)));
               };
-              const up = (ev: PointerEvent) => {
-                window.removeEventListener('pointermove', move);
-                window.removeEventListener('pointerup', up);
+              const stopEl = e.currentTarget as HTMLElement;
+              const up = () => {
                 if (moved) endTx();
-                else setPick((ev.target as HTMLElement).getBoundingClientRect());
+                else setPick(stopEl.getBoundingClientRect());
               };
-              window.addEventListener('pointermove', move);
-              window.addEventListener('pointerup', up);
+              trackPointer(null, move, up);
             }}
             onDoubleClick={(e) => {
               e.stopPropagation();

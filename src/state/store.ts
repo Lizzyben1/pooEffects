@@ -10,7 +10,7 @@ import { produce, type Draft } from 'immer';
 import type { Composition, KeyframeRef, Project } from '../core/types';
 import { createProject } from '../core/factory';
 import type {
-  CameraToolKind, ContextMenuState, DialogState, DockNode, PanelId, Preferences, RenderQueueItem, RevealMode, ShapeToolKind,
+  CameraToolKind, ContextMenuState, DialogState, DockNode, PanelId, Preferences, RenderQueueItem, RevealMode, SelTarget, ShapeToolKind,
   TimelineState, Toast, ToolId, ViewerState,
 } from './uiTypes';
 import { DEFAULT_WORKSPACE, WORKSPACES } from '../ui/dock/workspaces';
@@ -35,6 +35,8 @@ export interface AppState {
   selEffect: string | null;
   selShapeItem: string | null;
   selMask: string | null;
+  /** timeline sub-item (effect, mask, shape item…) picked by clicking its row; cleared when the layer or keyframe selection changes */
+  selTarget: SelTarget | null;
 
   tool: ToolId;
   shapeTool: ShapeToolKind;
@@ -103,6 +105,7 @@ export const useApp = create<AppState>()(() => ({
   selEffect: null,
   selShapeItem: null,
   selMask: null,
+  selTarget: null,
   tool: 'select',
   shapeTool: 'rect',
   cameraTool: 'orbit',
@@ -129,6 +132,13 @@ export const useApp = create<AppState>()(() => ({
 
 export const getApp = () => useApp.getState();
 export const setApp = (partial: Partial<AppState> | ((s: AppState) => Partial<AppState>)) => useApp.setState(partial);
+
+// A sub-item pick only lasts until the user selects something else: any later change of the layer or
+// keyframe selection (that did not itself set a new pick) drops it, so Delete never hits a stale target.
+useApp.subscribe((s, prev) => {
+  if (!s.selTarget || s.selTarget !== prev.selTarget) return;
+  if (s.selLayers !== prev.selLayers || (s.selKeys !== prev.selKeys && s.selKeys.length > 0) || s.activeCompId !== prev.activeCompId) setApp({ selTarget: null });
+});
 
 // ── document commits & history ──────────────────────────────────────────────
 
@@ -199,6 +209,7 @@ function sanitizeSelection(p: Project): Partial<AppState> {
     selLayers: s.selLayers.filter((id) => ids.has(id)),
     selKeys: s.selKeys.filter((k) => ids.has(k.split('|')[0])),
     selProps: s.selProps.filter((k) => ids.has(k.split('|')[0])),
+    selTarget: null,
   };
 }
 
@@ -224,7 +235,7 @@ export function loadProject(p: Project, fileName: string | null = null): void {
   setApp({
     project: p, past: [], future: [], txDepth: 0, txBase: null, dirty: false, fileName,
     activeCompId: compId, openComps: compId ? [compId] : [], selLayers: [], selKeys: [], selProps: [], selItems: [],
-    selEffect: null, selShapeItem: null, selMask: null, expanded: {}, reveal: { kind: 'none' }, exprErrors: {},
+    selEffect: null, selShapeItem: null, selMask: null, selTarget: null, expanded: {}, reveal: { kind: 'none' }, exprErrors: {},
   });
 }
 
@@ -264,7 +275,7 @@ export function defaultViewer(): ViewerState {
 }
 
 export function defaultTimeline(): TimelineState {
-  return { pxPerSec: 120, scrollTime: 0, graphEditor: false, graphMode: 'value', leftWidth: 600, showModes: true };
+  return { pxPerSec: 120, scrollTime: 0, graphEditor: false, graphMode: 'auto', leftWidth: 600, showModes: true };
 }
 
 export function viewerOf(s: AppState, compId: string | null): ViewerState {
