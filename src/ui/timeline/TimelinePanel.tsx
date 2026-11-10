@@ -629,7 +629,7 @@ const TrackCell = memo(function TrackCell({ row, tm, trackW, selKeys }: { row: R
     );
   }
   return <div className="tl-track" />;
-}, (a, b) => a.row.key === b.row.key && a.row.layer === b.row.layer && a.row.kind === b.row.kind && a.tm === b.tm && a.trackW === b.trackW && a.selKeys === b.selKeys);
+}, (a, b) => a.row.key === b.row.key && a.row.layer === b.row.layer && a.row.kind === b.row.kind && a.tm === b.tm && a.trackW === b.trackW && (a.selKeys === b.selKeys || (!a.selKeys.length && !b.selKeys.length)));
 
 function Playhead({ comp, tm, trackW }: { comp: Composition; tm: TimeMap; trackW: number }) {
   const ref = useRef<HTMLDivElement>(null);

@@ -32,8 +32,8 @@ File references are relative to `src/`.
 ```
 
 **Rendering, decoding and encoding all live in one module worker.** The UI thread never touches WebGL. It sends the
-project (structured-cloned on every committed change) and render requests, and receives `ImageBitmap`s with zero-copy
-transfer.
+project once, every later edit as a short list of patches (§2.1), and render requests; it receives `ImageBitmap`s with
+zero-copy transfer.
 
 **Fallback.** If a worker cannot create a WebGL2 context on an `OffscreenCanvas`, the host transparently falls back to
 an **inline server**. That is the same `RenderServer` class, loaded with a dynamic `import()` and run on the main thread.
@@ -65,6 +65,26 @@ seeked `<video>` element.
   - React selectors re-render only what changed.
 - **High-frequency time lives outside the document.** Current time and the playing flag are in a separate vanilla store
   (`state/time.ts`), so 60 fps playback only re-renders the handful of components that display time.
+
+### 2.1 Incremental sync to the worker (`core/sync.ts`)
+
+Structured-cloning the whole project on every change costs time proportional to the *project*, on the UI thread, for
+every pointer move of a drag. Because edits replace only the objects on the path to the change, the host instead
+computes `diffTree(previous, next)`:
+
+- it descends only where references differ, so the cost is proportional to the *edit*;
+- a changed leaf becomes `{p: path, v}`; a removed key becomes `{p, del}`;
+- an array of `{id}` items whose membership or order changed (a layer added, a keyframe inserted or re-sorted) becomes
+  `{p, ids, add}`: the order as a list of ids plus only the items the other side does not have yet;
+- an object whose `id` changed is replaced wholesale rather than compared field by field;
+- when more than a budget of nodes had to be compared (opening another project) it returns `null` and the host sends
+  the whole document.
+
+The worker applies patches with `applyPatches`, which copies only the nodes on each patched path. Layers and keyframes
+an edit did not touch therefore keep their identity in the worker too, so identity-keyed caches there (spatial arc
+tables, layer key-time summaries) survive edits. Messages carry a revision number; a patch whose base revision is not
+the one the worker holds is dropped and answered with `needProject`, and the host re-sends the full document. The
+inline (main-thread) server shares the document by reference and needs no patches.
 
 ---
 
@@ -295,7 +315,13 @@ FBO-backed textures keyed by size and format, reset every frame and evicted when
 ### 7.1 Frame cache (`state/cache.ts`)
 
 - **Keys and budget.** Frames are keyed by `comp | frame | config`, where config is render scale, motion blur and draft.
-  They are stored as `ImageBitmap`s under a memory budget (Preferences, default 1.5 GB) and evicted least-recently-used.
+  They are stored as `ImageBitmap`s under a memory budget (Preferences, default 1.5 GB).
+- **Eviction.** The map's insertion order is the recency order (a hit re-inserts its entry), so eviction is O(1) per
+  frame. Frames of other comps and configurations are evicted first, then the least recently used of the current one.
+- **Pinning.** A viewer pins the bitmap it is showing. An evicted or invalidated bitmap that is pinned leaves the cache
+  but is only closed when the viewer lets go, so a repaint (pan, zoom, resize) never meets a closed bitmap.
+- **Refused frames.** `put()` refuses a frame rendered from a document that has since changed and leaves the bitmap
+  with the caller: the viewer still shows it (it is the newest picture available), it just is not cached.
 - **Dependency-based invalidation.** After each document change, every cached comp's **signature** is recomputed: the
   object references of the comp, its nested precomps (recursively) and the footage it uses. Structural sharing makes
   this exact: if all references match, every cached frame is still valid. Editing a precomp invalidates every comp that
@@ -307,7 +333,9 @@ FBO-backed textures keyed by size and format, reset every frame and evicted when
 While idle, the engine fills the work area of the active comp in the background, starting from the current time and
 wrapping around:
 - at most two `cache` jobs are in flight;
-- rendering stops when the cache is full, during playback, and during transactions;
+- rendering stops during playback and during transactions, and when `hasRoomFor()` reports that another frame would
+  only fit by evicting frames of this same comp and configuration — otherwise a work area larger than the budget would
+  be rendered in a loop forever;
 - any edit bumps a generation counter, cancelling stale jobs.
 
 ### 7.3 Playback (`state/playback.ts`)
@@ -328,7 +356,8 @@ wrapping around:
 | UI → worker | Purpose |
 | --- | --- |
 | `init {fonts}` | Create the WebGL2 renderer and load bundled fonts into the worker's `FontFaceSet`; replies `ready {caps}` or `fatal`. |
-| `project {project}` | Replace the document (sent on every committed change). |
+| `project {project, rev}` | Replace the document (first sync, project load, or after `needProject`). |
+| `projectPatch {patches, base, rev}` | Apply an edit on top of revision `base` (§2.1). Sent on every committed change. |
 | `image / video / audio / font` | Register assets. Bitmaps and audio buffers are transferred; video arrives as a `Blob` and is demuxed lazily. |
 | `render {id, key, purpose, opts, bg, maxSize?}` | Queue a frame. `purpose` ∈ `view` (coalesced per key) · `cache` · `thumb`. |
 | `cancel {purpose}` | Drop queued jobs of that purpose (answered with `cancelled {ids}`). |
@@ -341,6 +370,7 @@ wrapping around:
 | `renderError` / `cancelled` | A job failed or was superseded; the host resolves the request with `null`. |
 | `needVideoFrame {footageId, time}` | Ask the UI thread for a `<video>`-decoded frame (4 s timeout). |
 | `exportProgress {frame, total, preview, fps}` / `exportDone {blob}` / `exportError` | Export lifecycle. |
+| `needProject` | A patch did not match the worker's revision; the host replies with a full `project`. |
 | `log` | Diagnostics. |
 
 **Requests and replies.** `RenderHost.render()` returns a promise per request. Superseded or failed requests resolve
@@ -394,12 +424,28 @@ with `null`, never reject, so callers simply skip a frame.
   splits and tab groups (`DockNode`), manipulated by small functions: insert at a drop zone, move, remove and normalise.
   Workspaces are tree factories.
 - **Commands.** Menus, context menus, toolbars and the keymap all call the same command registry (`ui/commands.ts`) and
-  action layer (`state/actions.ts`).
+  action layer (`state/actions.ts`). Menu definitions compute `disabled` from what is currently selected, and commands
+  that need a selection report it with a toast instead of doing nothing.
+- **Selection.** Besides layers and keyframes there is one *picked sub-item* (`selTarget`: an effect, mask, shape item,
+  text animator or tracker row the user clicked). Delete and Duplicate act on keyframes first, then the picked
+  sub-item, then layers. The pick is dropped as soon as the layer or keyframe selection changes, so it can never be
+  stale.
+- **Pointer gestures** (`ui/pointer.ts`). Every drag runs through `trackPointer`, which ends exactly once on release,
+  cancel, window blur, or a mouse move with no button held. Drags hold an undo transaction open, and an open
+  transaction suspends caching, so a drag that never ended used to leave the app unable to cache. Wheel handlers that
+  zoom are attached natively as non-passive listeners (`useWheel`) because React's `onWheel` cannot `preventDefault`.
+  `installFocusRelease` blurs dropdowns, buttons and sliders after pointer use so they do not swallow shortcuts.
+- **Graph editor** (`ui/timeline/GraphEditor.tsx`). Handles are positioned from `effectiveEase()` — the ease a keyframe
+  side really uses whatever its type — and the speed curve from `segmentSpeed()`, the exact slope of the segment's
+  temporal Bézier. The value range auto-fits but is frozen for the length of a gesture, which is what keeps a drag
+  linear under the cursor.
 - **Keymap.** The keymap (`ui/shell/keymap.ts`) is a table. The handler matches combos against it and the Keyboard
   Shortcuts dialog renders it, so the documentation can't drift from behaviour. <kbd>Space</kbd> plays on release unless
   the viewer was dragged while it was held, which makes it AE's temporary hand tool.
 - **Rendering cost.** Heavy panels subscribe to time through `useThrottledTime` (≈10–12 Hz while playing, exact while
-  paused). The timeline virtualises rows. The viewer draws bitmaps and overlays on canvases.
+  paused). The timeline virtualises rows, and its rows are memoised on their own layer object: an edit re-renders the
+  rows of the layer it touched, a playback tick only the property rows that display a value. The viewer draws bitmaps
+  and overlays on canvases; pixel readouts use a 1×1 scratch canvas so the viewer canvas is never read back.
 
 ---
 
@@ -418,7 +464,17 @@ with `null`, never reject, so callers simply skip a frame.
 
 ## 13. Tests
 
-`npm test` runs 45 node:test cases with tsx:
+`npm test` runs the node:test suites with tsx:
+
+- **Stability** (`tests/stability.test.ts`):
+  - `diffTree` / `applyPatches` round trips through structured clone for value edits, renames, reorders, inserts,
+    removals and deleted keys; identity of untouched subtrees; patch size proportional to the edit;
+  - `effectiveEase` and `segmentSpeed` against numerical derivatives; converting to Bézier or editing one ease
+    dimension leaves the rest of the curve unchanged; linked and split eases; hold toggling;
+  - dragging a keyframe past another keeps both, dropping onto one replaces it;
+  - path vertex insertion preserves the shape; removal and corner/smooth conversion;
+  - pre-compose "leave all attributes";
+  - cache LRU order, pinning, refusal of stale frames and the background-caching stop condition.
 
 - **Interpolation** (`tests/interpolate.test.ts`):
   - linear, hold and easy-ease segments, and clamping outside the keyed range;

@@ -337,8 +337,12 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
         trackMarquee.current = null;
         loupe.current = null;
       } else {
-        onUp?.(e);
-        if (tx) endTx();
+        // the transaction must close even if a handler throws: an open one suspends caching
+        try {
+          onUp?.(e);
+        } finally {
+          if (tx) endTx();
+        }
       }
       paintOverlay();
     });

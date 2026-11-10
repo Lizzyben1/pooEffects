@@ -95,6 +95,9 @@ export async function runExport(job: ExportJob, deps: ExportDeps): Promise<void>
     const needs = new Map<string, number[]>();
     collectVideoNeeds(project, comp, t, needs);
     if (needs.size) await assets.prepare(needs);
+    // Render from the document as it was when the export started: the viewer keeps rendering (and the
+    // user may keep editing) between frames, which points the shared renderer at the live project.
+    renderer.setProject(project);
     const r = renderer.render({ compId: comp.id, time: t, scale, motionBlur: job.motionBlur, guides: false, draft: false });
     if (!r) throw new Error('render failed');
     renderer.present(r.tex, alpha ? null : comp.bgColor);

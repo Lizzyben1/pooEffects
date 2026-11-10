@@ -183,6 +183,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ['-'], label: 'Zoom Out (Time)', group: 'Timeline', run: () => zoomTimeline(1 / 1.5), repeat: true },
   { keys: [';'], label: 'Toggle Frame-Level Zoom', group: 'Timeline', run: toggleFrameZoom },
   { keys: ['Shift+F3'], label: 'Toggle Graph Editor', group: 'Timeline', run: withComp((id) => setTimeline(id, { graphEditor: !timelineOf(getApp(), id).graphEditor })) },
+  { keys: ['F'], label: 'Fit Graph Editor View', group: 'Timeline', run: () => {}, displayOnly: true, note: 'while the Graph Editor is open' },
   { keys: ['F4'], label: 'Toggle Switches / Modes Columns', group: 'Timeline', run: withComp((id) => setTimeline(id, { showModes: !timelineOf(getApp(), id).showModes })) },
 
   // Layers
@@ -248,6 +249,8 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ['Y'], label: 'Pan Behind (Anchor Point) Tool', group: 'Tools', run: () => setTool('panBehind') },
   { keys: ['Q'], label: 'Shape Tools (press again to cycle)', group: 'Tools', run: () => setTool('shape') },
   { keys: ['G'], label: 'Pen Tool', group: 'Tools', run: () => setTool('pen') },
+  { keys: ['Enter'], label: 'Pen: Finish Open Path', group: 'Tools', run: () => {}, displayOnly: true },
+  { keys: ['Backspace'], label: 'Pen: Remove Last Point · Selection: Delete Path Vertex', group: 'Tools', run: () => {}, displayOnly: true },
   { keys: ['Alt+W'], label: 'Roto Brush Tool (SAM 2)', group: 'Tools', run: () => setTool('roto') },
   { keys: ['Ctrl+T'], label: 'Type Tool', group: 'Tools', run: () => setTool('text'), note: 'Ctrl+T is reserved by most browsers outside an installed app' },
 

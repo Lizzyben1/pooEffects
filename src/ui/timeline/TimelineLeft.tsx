@@ -11,6 +11,7 @@ import { getAt } from '../../core/props';
 import type { Row } from './rows';
 import type { SelTarget } from '../../state/uiTypes';
 import { PropEditor } from '../controls/PropEditor';
+import { LazySelect } from '../controls/LazySelect';
 import {
   AdjustmentIcon, CollapseIcon, CubeIcon, FxIcon, LayerTypeIcon, MotionBlurIcon, PickWhipIcon, QualityIcon, ShyIcon, SoloIcon, StopwatchIcon,
 } from '../icons';
@@ -24,6 +25,10 @@ import { getTime } from '../../state/time';
 import { deleteTracker, setTracking, trackerKindName, useTracking } from '../../state/tracking';
 
 export const INDENT = 14;
+
+const MATTE_MODES = ['alpha', 'alphaInverted', 'luma', 'lumaInverted'] as const;
+const MATTE_NAMES = { alpha: 'Alpha', alphaInverted: 'Alpha Inv', luma: 'Luma', lumaInverted: 'Luma Inv' } as const;
+const matteLabel = (l: LayerDirEntry, m: (typeof MATTE_MODES)[number]) => `${l.index + 1}. ${l.name.slice(0, 14)} — ${MATTE_NAMES[m]}`;
 
 function Twirl({ open, onClick }: { open: boolean; onClick: (e: React.MouseEvent) => void }) {
   return (
@@ -85,6 +90,8 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showModes, se
     A.toggleLayerSwitch(comp.id, ids(), key);
   };
   const isAV = layer.type === 'video' || layer.type === 'audio' || layer.type === 'precomp';
+  const matteEntry = layer.trackMatte ? dir.find((l) => l.id === layer.trackMatte!.layerId) : undefined;
+  const parentEntry = layer.parentId ? dir.find((l) => l.id === layer.parentId) : undefined;
   const hasVideo = layer.type !== 'audio';
   const label = LABEL_COLORS[layer.label]?.hex ?? '#555';
   return (
@@ -152,14 +159,15 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showModes, se
         </div>
       ) : (
         <div className="modes">
-          <select className="mini-select" value={layer.blendMode} title="Blending Mode" onPointerDown={(e) => e.stopPropagation()} onChange={(e) => A.setLayerFields(comp.id, ids(), { blendMode: e.target.value as Layer['blendMode'] })}>
-            {BLEND_MODES.map((m) => <option key={m} value={m}>{BLEND_LABELS[m]}</option>)}
-          </select>
+          <LazySelect className="mini-select" value={layer.blendMode} label={BLEND_LABELS[layer.blendMode]} title="Blending Mode" onPointerDown={(e) => e.stopPropagation()} onChange={(e) => A.setLayerFields(comp.id, ids(), { blendMode: e.target.value as Layer['blendMode'] })}>
+            {() => BLEND_MODES.map((m) => <option key={m} value={m}>{BLEND_LABELS[m]}</option>)}
+          </LazySelect>
           <span className={`sw tiny${layer.preserveTransparency ? ' on' : ''}`} title="Preserve Underlying Transparency" onPointerDown={(e) => e.stopPropagation()} onClick={sw('preserveTransparency')}>T</span>
-          <select
+          <LazySelect
             className="mini-select"
             title="Track Matte"
             value={layer.trackMatte ? `${layer.trackMatte.layerId}|${layer.trackMatte.mode}` : ''}
+            label={matteEntry && layer.trackMatte ? matteLabel(matteEntry, layer.trackMatte.mode) : 'No Matte'}
             onPointerDown={(e) => e.stopPropagation()}
             onChange={(e) => {
               const v = e.target.value;
@@ -170,29 +178,36 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showModes, se
               }
             }}
           >
-            <option value="">No Matte</option>
-            {dir.filter((l) => l.id !== layer.id && l.type !== 'camera' && l.type !== 'light' && l.type !== 'audio').map((l) => (
-              (['alpha', 'alphaInverted', 'luma', 'lumaInverted'] as const).map((m) => (
-                <option key={`${l.id}|${m}`} value={`${l.id}|${m}`}>{l.index + 1}. {l.name.slice(0, 14)} — {{ alpha: 'Alpha', alphaInverted: 'Alpha Inv', luma: 'Luma', lumaInverted: 'Luma Inv' }[m]}</option>
-              ))
-            ))}
-          </select>
+            {() => (
+              <>
+                <option value="">No Matte</option>
+                {dir.filter((l) => l.id !== layer.id && l.type !== 'camera' && l.type !== 'light' && l.type !== 'audio').map((l) => (
+                  MATTE_MODES.map((m) => <option key={`${l.id}|${m}`} value={`${l.id}|${m}`}>{matteLabel(l, m)}</option>)
+                ))}
+              </>
+            )}
+          </LazySelect>
         </div>
       )}
       <div className="parent">
         <span className="pickwhip" title="Pick whip: drag onto a layer to parent" onPointerDown={(e) => { e.stopPropagation(); onPickWhip(e, layer); }}>
           <PickWhipIcon size={13} />
         </span>
-        <select
+        <LazySelect
           className="mini-select"
           value={layer.parentId ?? ''}
+          label={parentEntry ? `${parentEntry.index + 1}. ${parentEntry.name}` : 'None'}
           title="Parent & Link"
           onPointerDown={(e) => e.stopPropagation()}
           onChange={(e) => A.setParent(comp.id, layer.id, e.target.value || null)}
         >
-          <option value="">None</option>
-          {dir.filter((l) => l.id !== layer.id).map((l) => <option key={l.id} value={l.id}>{l.index + 1}. {l.name}</option>)}
-        </select>
+          {() => (
+            <>
+              <option value="">None</option>
+              {dir.filter((l) => l.id !== layer.id).map((l) => <option key={l.id} value={l.id}>{l.index + 1}. {l.name}</option>)}
+            </>
+          )}
+        </LazySelect>
       </div>
     </div>
   );

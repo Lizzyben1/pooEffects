@@ -181,6 +181,9 @@ export function startEngine(): Promise<unknown> {
   let lastProject: Project = getApp().project;
   useApp.subscribe((s, prev) => {
     if (s.prefs.softwareVideoDecode !== prev.prefs.softwareVideoDecode) sendDecodePrefs();
+    // Background caching pauses during a gesture / analysis (open transaction). Nothing else would restart
+    // it if the last edit of the gesture happened a while before the release, so restart it here.
+    if ((prev.txDepth > 0 && s.txDepth === 0) || (s.prefs.backgroundRender && !prev.prefs.backgroundRender)) scheduleBackground(500);
     if (s.project === lastProject) return;
     lastProject = s.project;
     host.setProject(s.project);

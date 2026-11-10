@@ -795,7 +795,7 @@
   place-items: center;
   overflow: hidden;
   background: radial-gradient(ellipse at 50% 42%, #171a24 0%, #08090c 62%);
-  transition: opacity 0.7s var(--ease), visibility 0.7s;
+  transition: opacity 0.45s var(--ease), visibility 0.45s;
 }
 .splash.leaving {
   opacity: 0;

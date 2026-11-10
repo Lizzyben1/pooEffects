@@ -40,13 +40,14 @@ export function Splash() {
   const [gone, setGone] = useState(false);
   useEffect(() => {
     if (!enabled) return;
-    const t = setTimeout(() => setMinDone(true), 1500);
+    // long enough for the logo to land, short enough not to be a wait of its own
+    const t = setTimeout(() => setMinDone(true), 800);
     return () => clearTimeout(t);
   }, [enabled]);
   const leaving = booted && minDone;
   useEffect(() => {
     if (!leaving) return;
-    const t = setTimeout(() => setGone(true), 750);
+    const t = setTimeout(() => setGone(true), 480);
     return () => clearTimeout(t);
   }, [leaving]);
   if (gone) return null;

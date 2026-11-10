@@ -73,8 +73,18 @@ Opus, then MP3. Builds without proprietary codecs, such as Chromium, therefore p
 - **Spatial interpolation:** position-like properties move along an N-D Bézier path with editable tangents, shown as a
   motion path in the viewer. Easing drives distance along the path through an arc-length table, so speed is constant
   per segment.
-- **Graph Editor** with value and speed graphs: drag keyframes and ease handles, marquee-select, and convert keyframes to
-  hold, linear or auto.
+- **Graph Editor** with value and speed graphs (<kbd>Shift</kbd>+<kbd>F3</kbd>):
+  - *Auto* shows the speed graph for Position-like properties (they ease along their motion path) and the value graph
+    for everything else; *Value* and *Speed* force one.
+  - Drag keyframes to retime the whole selection; on the value graph the drag also changes values, on the speed graph a
+    vertical drag sets the keyframe's speed. <kbd>Shift</kbd> constrains to one axis.
+  - Drag a handle sideways for influence and up or down for speed. Handles start from the ease the keyframe is really
+    using, so a linear keyframe turns into a Bézier one without jumping. <kbd>Alt</kbd>-drag joins or splits the
+    incoming and outgoing speed; <kbd>Shift</kbd> keeps the slope and changes only the reach.
+  - The value axis fits the curves automatically and holds still for the length of a drag. Wheel pans it,
+    <kbd>Alt</kbd>+wheel zooms it, <kbd>Ctrl</kbd>+wheel zooms time, <kbd>Shift</kbd>+wheel scrolls time and
+    <kbd>F</kbd> fits again.
+  - Double-click a curve to add a keyframe; right-click a keyframe for interpolation, velocity and easing.
 - **Layer timing:** time remapping, time stretch (including negative stretch, which reverses the layer), freeze frame,
   split layer, and in/out point trimming.
 - **Work area** and comp markers, plus a **J/K** jump to the previous or next keyframe, marker or edit.
@@ -117,6 +127,12 @@ Opus, then MP3. Builds without proprietary codecs, such as Chromium, therefore p
 ### Shapes & text
 - **Shape generators:** rectangle, ellipse, polystar (star and polygon) and free Bézier paths drawn with the Pen tool.
   Groups nest with their own transforms.
+- **Pen tool** (<kbd>G</kbd>): click for corner points, drag to pull out tangents, click the first point to close
+  (drag while closing to shape the last curve). <kbd>Enter</kbd> or a double-click finishes an open path,
+  <kbd>Backspace</kbd> removes the last point and <kbd>Esc</kbd> cancels. With a layer selected the path becomes a
+  mask; otherwise it becomes a shape layer. On an existing path, click a segment to add a point, click a point to
+  delete it and <kbd>Alt</kbd>-click a point to switch it between corner and smooth. With the Selection tool,
+  <kbd>Delete</kbd> removes the selected point.
 - **Shape operators:**
   - Trim Paths (simultaneous or individual), Repeater, Merge Paths (merge, add, subtract, intersect and exclude);
   - Zig Zag, Round Corners, Offset Paths, Pucker & Bloat, Twist and Wiggle Paths;
@@ -160,6 +176,15 @@ their stack to everything below, limited to their own masked footprint.
   - Preview, Info, Character and Align;
   - Render Queue;
   - Flowchart: a node graph of precomps and footage.
+- **Every command has one implementation**, reached the same way from the menu bar, the context menus, the toolbar and
+  the keyboard. Menu items that cannot apply are greyed out, and a command that needs a selection says so.
+- **Context menus** on layers, keyframes, property rows, effects, masks, shape items, the graph editor, and on empty
+  timeline or viewer space (New ▸, Paste, Composition Settings…).
+- **Drag and drop:** footage and compositions from the Project panel onto the viewer or timeline (they land above the
+  row you drop on), effects from Effects & Presets onto a layer in the viewer, timeline or Effect Controls, and files
+  from the desktop anywhere.
+- **Delete** removes what you last picked: keyframes, then a clicked effect, mask, shape item, animator or tracker row,
+  then the selected layers. <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates a picked effect the same way.
 - **After Effects keyboard map:** press <kbd>F1</kbd> for the searchable list. Some highlights:
 
   | Keys | Action |
@@ -185,7 +210,9 @@ their stack to everything below, limited to their own masked footprint.
 - **RAM preview:**
   - Rendered frames are cached per comp and render settings, and a green bar marks cached frames on the ruler.
   - The cache is invalidated by dependency: it compares the comp, its nested precomps and its footage by reference.
-  - Idle time fills the work area in the background.
+  - Idle time fills the work area in the background, and stops when the cache is full rather than re-rendering frames
+    it would have to throw away. When memory runs out, frames of other comps and resolutions go first, then the least
+    recently used; the frame on screen is never dropped.
 - **Playback:** real-time, clocked by the AudioContext once the range is cached; render-as-you-go before that.
 - **Render Queue:**
   - sequential jobs, each with its own format, resolution, quality, range, motion blur and audio settings;
@@ -244,7 +271,8 @@ buffers. The UI never freezes. Open the **Tracker** panel (or the *Motion Tracki
   - A status-bar indicator shows the decode path and the average decode time per frame. Hover it for details.
 - **Auto-save:** the project and its media persist in IndexedDB.
 - **Save / Open:** a `.pooe` file is a ZIP holding `project.json`, the media and the roto mattes.
-- Undo / redo covers every edit. Drags and scrubs count as single undo steps.
+- Undo / redo covers every edit. Drags, scrubs, slider moves and multi-layer commands count as single undo steps.
+- Layer audio follows time remapping: it speeds up, slows down and reverses with the picture.
 
 ---
 
@@ -272,6 +300,19 @@ docs/          ARCHITECTURE.md — frame lifecycle, matrix math, shader pass gra
 ```
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for how the engine works.
+
+## Performance notes
+
+- **Edits are sent to the render worker as patches.** The document is immutable with structural sharing, so the UI
+  thread diffs only the objects an edit replaced and posts a few hundred bytes instead of re-serialising the project
+  on every pointer move. The worker applies them the same way, which keeps untouched layers identical between frames.
+- **Timeline rows re-render only when their own layer changes**, and not at all on playback ticks unless they show a
+  value. The graph editor redraws on edits, not on time changes.
+- **The viewer canvas stays on the GPU.** Pixel readouts for the Info panel go through a 1×1 scratch canvas, and only
+  while that panel is showing.
+- **Wheel and drag handling** is native and non-passive where it has to be: <kbd>Ctrl</kbd>+wheel and trackpad pinches
+  zoom the viewer or timeline, never the browser page, and a drag always ends cleanly (released outside the window,
+  cancelled, or interrupted by a focus change) so caching is never left blocked by a half-finished gesture.
 
 ## Notes & limitations
 

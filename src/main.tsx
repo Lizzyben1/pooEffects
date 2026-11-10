@@ -65,7 +65,7 @@ async function boot(): Promise<void> {
   } catch {
     welcomed = true;
   }
-  if (!welcomed) setTimeout(() => !getApp().dialog && openDialog({ kind: 'welcome' }), getApp().prefs.showSplash ? 2300 : 400);
+  if (!welcomed) setTimeout(() => !getApp().dialog && openDialog({ kind: 'welcome' }), getApp().prefs.showSplash ? 1300 : 400);
 }
 
 void boot();

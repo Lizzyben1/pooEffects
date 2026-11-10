@@ -1522,7 +1522,8 @@ export function selectLayers(ids: string[], mode: 'set' | 'add' | 'toggle' = 'se
     if (mode === 'set') sel = ids;
     else if (mode === 'add') sel = [...new Set([...s.selLayers, ...ids])];
     else sel = s.selLayers.filter((x) => !ids.includes(x)).concat(ids.filter((x) => !s.selLayers.includes(x)));
-    return { selLayers: sel, selKeys: mode === 'set' ? [] : s.selKeys };
+    // keep the same (empty) array when nothing changes: selKeys identity drives timeline row re-renders
+    return { selLayers: sel, selKeys: mode === 'set' && s.selKeys.length ? [] : s.selKeys };
   });
 }
 
