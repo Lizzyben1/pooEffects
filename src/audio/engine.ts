@@ -95,6 +95,61 @@ function scheduleComp(
     if (!f || !f.hasAudio) continue;
     const buf = getMedia(fid)?.audio;
     if (!buf) continue;
+    // level automation (dB average of L/R), shared by every source this layer schedules
+    const lv = layer.audio?.levels;
+    const levelAt = (t: number) => {
+      if (!lv) return 1;
+      const v = lv.keyframes.length ? keyframedValue(lv, (t - layer.startTime) / k, false) : lv.value;
+      return dbToGain(((v[0] ?? 0) + (v[1] ?? 0)) / 2);
+    };
+    const makeGain = (from: number, to: number): GainNode => {
+      const gain = c.createGain();
+      gain.connect(dest);
+      if (lv && lv.keyframes.length) {
+        const step = frameDuration(comp.frameRate);
+        for (let t = from; t < to; t += step) gain.gain.setValueAtTime(levelAt(t), Math.max(0, map.toClock(t)));
+      } else gain.gain.value = levelAt(from);
+      return gain;
+    };
+
+    if (layer.timeRemapEnabled && layer.timeRemap.keyframes.length) {
+      // Time remapping: the source position follows the remap curve. Each stretch where the curve runs
+      // forwards (or backwards) becomes one source whose playback rate is automated to the curve's slope,
+      // so the sound speeds up, slows down and reverses with the picture. Freeze frames are silent.
+      const srcAt = (t: number) => keyframedValue(layer.timeRemap, (t - layer.startTime) / k, false) as number;
+      const step = Math.max(1 / 120, frameDuration(comp.frameRate) / 2);
+      const flush = (s0: number, s1: number, dir: number, rates: number[]) => {
+        if (!dir || s1 - s0 < 1e-6) return;
+        const srcBuf = dir > 0 ? buf : reversed(buf, c);
+        const pos = Math.min(buf.duration, Math.max(0, srcAt(s0)));
+        const offset = dir > 0 ? pos : buf.duration - pos;
+        if (offset >= buf.duration - 1e-4) return;
+        const src = c.createBufferSource();
+        src.buffer = srcBuf;
+        const gain = makeGain(s0, s1);
+        src.connect(gain);
+        rates.forEach((r, i) => src.playbackRate.setValueAtTime(Math.min(16, Math.max(0.01, r * map.rate)), Math.max(0, map.toClock(s0 + i * step))));
+        src.start(Math.max(c.currentTime, map.toClock(s0)), offset);
+        src.stop(Math.max(c.currentTime, map.toClock(s1)));
+        out.push({ src, gain });
+      };
+      let runStart = a, dir = 0, rates: number[] = [];
+      for (let t = a; t < b - 1e-9; t += step) {
+        const t2 = Math.min(b, t + step);
+        const ds = srcAt(t2) - srcAt(t);
+        const d = ds > 1e-7 ? 1 : ds < -1e-7 ? -1 : 0;
+        if (d !== dir) {
+          flush(runStart, t, dir, rates);
+          runStart = t;
+          dir = d;
+          rates = [];
+        }
+        rates.push(Math.abs(ds) / (t2 - t));
+      }
+      flush(runStart, b, dir, rates);
+      continue;
+    }
+
     const reverse = k < 0;
     const ak = Math.abs(k);
     let offset = (a - layer.startTime) / k;
@@ -109,21 +164,9 @@ function scheduleComp(
     const src = c.createBufferSource();
     src.buffer = useBuf;
     src.playbackRate.value = map.rate / ak;
-    const gain = c.createGain();
+    const gain = makeGain(a, b);
     src.connect(gain);
-    gain.connect(dest);
     const when = map.toClock(a) + startDelay;
-    // level automation (dB average of L/R)
-    const lv = layer.audio?.levels;
-    const levelAt = (t: number) => {
-      if (!lv) return 1;
-      const v = lv.keyframes.length ? keyframedValue(lv, (t - layer.startTime) / k, false) : lv.value;
-      return dbToGain(((v[0] ?? 0) + (v[1] ?? 0)) / 2);
-    };
-    if (lv && lv.keyframes.length) {
-      const step = frameDuration(comp.frameRate);
-      for (let t = a; t < b; t += step) gain.gain.setValueAtTime(levelAt(t), Math.max(0, map.toClock(t)));
-    } else gain.gain.value = levelAt(a);
     src.start(Math.max(c.currentTime, when), Math.max(0, offset), Math.max(0.001, dur - startDelay));
     out.push({ src, gain });
   }

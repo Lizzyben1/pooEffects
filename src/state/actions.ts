@@ -1124,11 +1124,58 @@ export function addCompMarker(compId: string, t = getTime(compId), comment = '')
   });
 }
 
+/** "Leave all attributes" needs a layer with its own pixel size: the new comp takes exactly that size. */
+export function canLeaveAttributes(layer: Layer | undefined): boolean {
+  return !!layer && (layer.type === 'solid' || layer.type === 'image' || layer.type === 'video' || layer.type === 'precomp');
+}
+
 export function precompose(compId: string, ids: string[], name: string, moveAll = true): string | null {
   const p = getApp().project;
   const comp = p.comps[compId];
   if (!comp || !ids.length) return null;
   const moving = comp.layers.filter((l) => ids.includes(l.id));
+  if (!moving.length) return null;
+  const firstIdx = comp.layers.findIndex((l) => ids.includes(l.id));
+
+  if (!moveAll && moving.length === 1 && canLeaveAttributes(moving[0])) {
+    // AE "Leave all attributes": the layer's SOURCE moves into a new comp of the source's own size and the
+    // layer itself — same id, transform, masks, effects, timing, parent, matte — now points at that comp.
+    // Because the new comp has the size of the old source, anchor and mask coordinates stay valid.
+    const src = moving[0];
+    const size = layerSourceSize(p, comp, src);
+    const k = stretchFactor(src);
+    const fd = frameDuration(comp.frameRate);
+    const lt0 = (src.inPoint - src.startTime) / k, lt1 = (src.outPoint - src.startTime) / k;
+    const lo = Math.max(0, Math.min(lt0, lt1)), hi = Math.max(lo + fd, lt0, lt1);
+    const nested = createComp({ name: uniqueCompName(p, name), width: size.w, height: size.h, frameRate: comp.frameRate, duration: Math.max(comp.duration, hi), bgColor: comp.bgColor });
+    const blank = createPrecompLayer(nested, nested);
+    const inner = regenIds(clone(src));
+    Object.assign(inner, {
+      transform: clone(blank.transform), masks: [], effects: [], markers: [], parentId: null, trackMatte: null, trackers: undefined, cameraTrack: undefined,
+      startTime: 0, stretch: 100, inPoint: lo, outPoint: hi, enabled: true, solo: false, locked: false, shy: false, threeD: false, motionBlur: false,
+      adjustment: false, collapse: false, guide: false, autoOrient: 'off', blendMode: 'normal', preserveTransparency: false, effectsEnabled: true,
+    } satisfies Partial<Layer>);
+    nested.layers = [inner];
+    const outer = clone(src);
+    outer.type = 'precomp';
+    outer.name = uniqueLayerName({ ...comp, layers: comp.layers.filter((l) => l.id !== src.id) }, nested.name);
+    outer.source = { compId: nested.id };
+    outer.timeRemapEnabled = false;
+    outer.timeRemap = clone(blank.timeRemap);
+    delete outer.solid;
+    delete outer.shape;
+    delete outer.text;
+    doc((d) => {
+      d.comps[nested.id] = nested as never;
+      const c = compOf(d, compId);
+      if (!c) return;
+      const i = c.layers.findIndex((l) => l.id === src.id);
+      if (i >= 0) c.layers[i] = outer as never;
+    });
+    setApp({ selLayers: [outer.id], selKeys: [], selProps: [] });
+    return nested.id;
+  }
+
   const nested = createComp({ name: uniqueCompName(p, name), width: comp.width, height: comp.height, frameRate: comp.frameRate, duration: comp.duration, bgColor: comp.bgColor });
   nested.motionBlur = comp.motionBlur;
   nested.shutterAngle = comp.shutterAngle;
@@ -1140,17 +1187,6 @@ export function precompose(compId: string, ids: string[], name: string, moveAll 
   });
   const pl = createPrecompLayer(comp, nested);
   pl.name = nested.name;
-  if (!moveAll && moving.length === 1) {
-    // keep transform, effects and masks on the outer layer (AE "Leave all attributes")
-    pl.transform = clone(moving[0].transform);
-    pl.masks = clone(moving[0].masks);
-    pl.effects = clone(moving[0].effects);
-    pl.effectsEnabled = moving[0].effectsEnabled;
-    nested.layers[0].transform = clone(createPrecompLayer(nested, nested).transform);
-    nested.layers[0].masks = [];
-    nested.layers[0].effects = [];
-  }
-  const firstIdx = comp.layers.findIndex((l) => ids.includes(l.id));
   doc((d) => {
     d.comps[nested.id] = nested as never;
     const c = compOf(d, compId);
@@ -1162,7 +1198,7 @@ export function precompose(compId: string, ids: string[], name: string, moveAll 
     }
     c.layers.splice(Math.min(firstIdx, c.layers.length), 0, pl as never);
   });
-  setApp({ selLayers: [pl.id] });
+  setApp({ selLayers: [pl.id], selKeys: [], selProps: [] });
   return nested.id;
 }
 

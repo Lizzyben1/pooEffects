@@ -48,7 +48,9 @@ export async function renderToCache(compId: string, frame: number, p: ViewParams
   const t = frame / exactFps(comp.frameRate);
   const r = await host.render('cache', 'cache', renderOptions(compId, t, p), null);
   if (!r) return false;
-  return cache.put(project, compId, frame, cfgKey(p), r.bitmap);
+  const stored = cache.put(project, compId, frame, cfgKey(p), r.bitmap);
+  if (!stored) r.bitmap.close();
+  return stored;
 }
 
 /** Viewer render with cache lookup/population (active camera view only). */
@@ -69,9 +71,10 @@ export async function renderForView(viewKey: string, compId: string, time: numbe
   setApp({ renderStats: { ms: r.ms, layers: r.layers, fps: getApp().renderStats.fps } });
   if (cacheable && getApp().txDepth === 0) {
     // keep a reference in the cache when allowed; the cache owns the bitmap from then on
+    // The cache owns the bitmap once stored. A frame rendered from a document that changed meanwhile is
+    // refused by the cache but is still the newest picture we have: show it rather than nothing.
     const stored = cache.put(project, compId, frame, cfg, r.bitmap);
-    if (stored) return { bitmap: cache.get(compId, frame, cfg)!, cached: true, result: r };
-    return null;
+    return { bitmap: r.bitmap, cached: stored, result: r };
   }
   return { bitmap: r.bitmap, cached: false, result: r };
 }
@@ -112,7 +115,7 @@ function pumpBackground(gen: number): void {
         break;
       }
     }
-    if (next < 0 || !cache.hasRoom(est)) return;
+    if (next < 0 || !cache.hasRoomFor(comp.id, cfg, est)) return;
     bgInflight++;
     pendingBg.add(next);
     const f = next;

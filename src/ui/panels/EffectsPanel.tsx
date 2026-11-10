@@ -3,6 +3,7 @@ import { ChevronRight, Search, Sparkles, Wand } from 'lucide-react';
 import { EFFECT_CATEGORIES, EFFECTS } from '../../effects/catalog';
 import { addEffectToSelection } from '../../state/actions';
 import { PRESETS, applyPreset } from '../presets';
+import { DND_EFFECT } from '../commands';
 
 export function EffectsPanel() {
   const [q, setQ] = useState('');
@@ -45,7 +46,7 @@ export function EffectsPanel() {
                   title={`${it.desc}\nDouble-click to apply to selected layers${it.kind === 'fx' ? ', or drag onto a layer' : ''}`}
                   draggable={it.kind === 'fx'}
                   onDragStart={(e) => {
-                    e.dataTransfer.setData('application/x-poo-effect', it.id);
+                    e.dataTransfer.setData(DND_EFFECT, it.id);
                     e.dataTransfer.effectAllowed = 'copy';
                   }}
                   onDoubleClick={() => (it.kind === 'fx' ? addEffectToSelection(it.id) : applyPreset(it.id))}

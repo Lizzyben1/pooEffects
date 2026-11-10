@@ -8,7 +8,7 @@ import * as A from '../state/actions';
 import { getTime, setTime } from '../state/time';
 import {
   createAdjustmentLayer, createCameraLayer, createLightLayer, createNullLayer, createShapeLayer, createSolidLayer, createTextLayer,
-  createProject, createFootageLayer, rectPath,
+  createProject, createFootageLayer, createPrecompLayer, rectPath,
 } from '../core/factory';
 import { togglePlay, stop as stopPlayback } from '../state/playback';
 import { openProjectFile, pickFiles, saveProjectFile, downloadBlob, setActiveFileHandle } from '../state/projectIO';
@@ -19,7 +19,7 @@ import { WORKSPACES } from './dock/workspaces';
 import { ensurePanel } from './dock/layout';
 import { deleteTracker, getTracking, stopTracking } from '../state/tracking';
 import type { PanelId, SelTarget } from '../state/uiTypes';
-import type { LightKind, TextAnimatorPropKey } from '../core/types';
+import type { Composition, LightKind, Project, TextAnimatorPropKey } from '../core/types';
 import { host, renderOptions, getViewParams } from '../state/engine';
 import { FrameEval, layerSourceSize } from '../core/evaluate';
 import { layerBounds } from './viewer/geometry';
@@ -121,6 +121,66 @@ export async function importFiles(files: File[], addToComp = false): Promise<voi
   }
   if (n) toast(`Imported ${n} item${n > 1 ? 's' : ''}`, 'success');
 }
+
+/** Does `comp` (directly or through nested precomps) contain the composition `targetId`? */
+function compUses(project: Project, comp: Composition, targetId: string, depth = 0): boolean {
+  if (depth > 32) return true;
+  for (const l of comp.layers) {
+    const id = l.source?.compId;
+    if (!id) continue;
+    if (id === targetId) return true;
+    const n = project.comps[id];
+    if (n && compUses(project, n, targetId, depth + 1)) return true;
+  }
+  return false;
+}
+
+/**
+ * Add a project item (footage or composition) to the active comp as a new layer at `index`.
+ * Used by double-click, the Project context menu and drag-and-drop onto the viewer / timeline.
+ */
+export function addProjectItemToComp(id: string, index = 0): string | null {
+  const s = getApp();
+  const c = comp();
+  if (!c) {
+    // nothing open: footage starts a comp of its own, a comp simply opens
+    const f = s.project.footage[id];
+    if (f) return newCompFromFootage(id);
+    if (s.project.comps[id]) A.openComp(id);
+    return null;
+  }
+  const f = s.project.footage[id];
+  if (f) {
+    const l = createFootageLayer(c, f);
+    A.addLayer(c.id, l, { index });
+    return l.id;
+  }
+  const nested = s.project.comps[id];
+  if (!nested) return null;
+  if (nested.id === c.id || compUses(s.project, nested, c.id)) {
+    toast(`“${nested.name}” contains this composition — nesting it here would loop forever`, 'warn', 4000);
+    return null;
+  }
+  const l = createPrecompLayer(c, nested);
+  A.addLayer(c.id, l, { index });
+  return l.id;
+}
+
+export function newCompFromFootage(footageId: string): string | null {
+  const f = getApp().project.footage[footageId];
+  if (!f) return null;
+  const id = A.newComp({
+    name: f.name.replace(/\.[^.]+$/, ''), width: f.width || 1920, height: f.height || 1080,
+    duration: f.duration > 0 ? f.duration : 10, frameRate: f.kind === 'video' && f.frameRate ? f.frameRate : 30,
+  });
+  const c = getApp().project.comps[id];
+  if (c) A.addLayer(id, createFootageLayer(c, f), { index: 0 });
+  return id;
+}
+
+/** Drag payloads between panels (HTML5 drag & drop). */
+export const DND_ITEM = 'application/x-poo-item';
+export const DND_EFFECT = 'application/x-poo-effect';
 
 export function newLayer(kind: 'text' | 'solid' | 'null' | 'shape' | 'adjustment' | 'camera' | LightKind): void {
   const cid = needComp();

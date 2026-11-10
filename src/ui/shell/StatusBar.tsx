@@ -15,7 +15,7 @@ const TOOL_HINTS: Record<Exclude<ToolId, 'camera'>, string> = {
   rotate: 'Drag a layer to rotate it · Shift snaps to 45°',
   panBehind: 'Drag the anchor point without moving the layer on screen',
   shape: 'Drag to draw (Shift constrains) · with a shape layer selected the path is added to it',
-  pen: 'Click to add vertices · drag for Bézier handles · click the first vertex or press Enter to close',
+  pen: 'Click: add point · drag: curve · click the first point: close · Enter: finish open path · Backspace: remove last point · on a path: click a segment to add a point, a point to delete it (Alt: corner ↔ smooth)',
   text: 'Click to create point text · click a text layer to edit its source text',
   roto: 'Roto Brush (SAM 2): click the subject to add foreground · Alt-click or right-click adds background · propagate from the Tracker panel',
 };

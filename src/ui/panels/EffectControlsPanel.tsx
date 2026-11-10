@@ -8,7 +8,7 @@ import { getEffectDef, type EffectParamDef } from '../../effects/catalog';
 import * as A from '../../state/actions';
 import { PropEditor } from '../controls/PropEditor';
 import { FxIcon, StopwatchIcon, LayerTypeIcon } from '../icons';
-import { togglePanel } from '../commands';
+import { DND_EFFECT, togglePanel } from '../commands';
 
 export function EffectControlsPanel() {
   const comp = useActiveComp();
@@ -37,13 +37,13 @@ function EffectControls({ comp, layer }: { comp: Composition; layer: Layer }) {
     <div
       className="fxc"
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes('application/x-poo-effect')) {
+        if (e.dataTransfer.types.includes(DND_EFFECT)) {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'copy';
         }
       }}
       onDrop={(e) => {
-        const type = e.dataTransfer.getData('application/x-poo-effect');
+        const type = e.dataTransfer.getData(DND_EFFECT);
         if (type) {
           e.preventDefault();
           A.addEffect(comp.id, layer.id, type);

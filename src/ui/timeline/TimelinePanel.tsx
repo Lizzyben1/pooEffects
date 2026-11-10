@@ -19,6 +19,7 @@ import { LABEL_COLORS } from '../../math/color';
 import { cachedFrames } from '../../state/cache';
 import { cfgKey, getViewParams } from '../../state/engine';
 import { compContextMenu, keyframeContextMenu, layerContextMenu } from '../menus/layerMenu';
+import { DND_EFFECT, DND_ITEM, addProjectItemToComp } from '../commands';
 import { TimeDisplay } from '../controls/TimeDisplay';
 import { GraphEditor } from './GraphEditor';
 import { scrubAt } from '../../audio/engine';
@@ -28,7 +29,22 @@ import { trackPointer, useWheel, wheelDelta } from '../pointer';
 
 export function TimelinePanel() {
   const comp = useActiveComp();
-  if (!comp) return <div className="empty"><div><div className="big">No composition</div>Open or create a composition to see its layers here.</div></div>;
+  if (!comp) {
+    return (
+      <div
+        className="empty"
+        onDragOver={(e) => e.dataTransfer.types.includes(DND_ITEM) && e.preventDefault()}
+        onDrop={(e) => {
+          const item = e.dataTransfer.getData(DND_ITEM);
+          if (!item) return;
+          e.preventDefault();
+          addProjectItemToComp(item);
+        }}
+      >
+        <div><div className="big">No composition</div>Open or create a composition to see its layers here — or drag footage in from the Project panel.</div>
+      </div>
+    );
+  }
   return <Timeline key={comp.id} comp={comp} />;
 }
 
@@ -420,6 +436,31 @@ function Timeline({ comp }: { comp: Composition }) {
           ref={scrollRef}
           className="tl-scroll"
           onScroll={(e) => setScrollTop((e.target as HTMLElement).scrollTop)}
+          onDragOver={(e) => {
+            // project items land above the row under the cursor; effects land on that row's layer
+            const isItem = e.dataTransfer.types.includes(DND_ITEM), isFx = e.dataTransfer.types.includes(DND_EFFECT);
+            if (!isItem && !isFx) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            const { y } = localRight(e);
+            const r = y < totalH ? rowAtY(y) : undefined;
+            const ri = r ? rows.findIndex((x) => x.kind === 'layer' && x.layer.id === r.layer.id) : -1;
+            setDropRow(ri >= 0 ? ri : null);
+          }}
+          onDragLeave={() => setDropRow(null)}
+          onDrop={(e) => {
+            const item = e.dataTransfer.getData(DND_ITEM), fx = e.dataTransfer.getData(DND_EFFECT);
+            setDropRow(null);
+            if (!item && !fx) return;
+            e.preventDefault();
+            const { y } = localRight(e);
+            const r = y < totalH ? rowAtY(y) : undefined;
+            if (item) addProjectItemToComp(item, r ? comp.layers.findIndex((l) => l.id === r.layer.id) : comp.layers.length);
+            else if (r) {
+              if (!getApp().selLayers.includes(r.layer.id)) A.selectLayers([r.layer.id]);
+              A.addEffect(comp.id, r.layer.id, fx);
+            } else A.addEffectToSelection(fx);
+          }}
         >
           <div
             className="tl-inner"

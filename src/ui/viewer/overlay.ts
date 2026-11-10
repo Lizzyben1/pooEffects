@@ -11,7 +11,7 @@ import { getEffectDef } from '../../effects/catalog';
 import { groupChainMatrix } from '../../shapes/evaluate';
 import { apply2d, applyVec2d, type Mat2d } from '../../shapes/path';
 import { exactFps } from '../../core/time';
-import { compToScreen, layerBounds, layerPointToScreen, layerQuad, worldToCompPx, type ViewCtx } from './geometry';
+import { compToScreen, layerBounds, layerPointToScreen, layerQuad, worldToCompPx, type PaneXform, type ViewCtx } from './geometry';
 import type { AppState } from '../../state/store';
 
 export type HandleHit =
@@ -31,6 +31,7 @@ export interface OverlayState {
   hover: HandleHit | null;
   marquee: { x0: number; y0: number; x1: number; y1: number } | null;
   shapeDraft: { x0: number; y0: number; x1: number; y1: number } | null;
+  /** path being drawn with the pen: points and tangents in COMP pixels (so panning / zooming mid-draw is safe); cursor in screen px */
   pen: { pts: { p: [number, number]; i: [number, number]; o: [number, number] }[]; cursor: [number, number] | null } | null;
   selectedVertex: { path: string; vi: number } | null;
 }
@@ -271,7 +272,7 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, v: ViewCtx, app: AppS
   }
 
   if (!showControls) {
-    drawTransient(ctx, ov);
+    drawTransient(ctx, ov, v.xf);
     return;
   }
 
@@ -423,10 +424,10 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, v: ViewCtx, app: AppS
       }
     }
   }
-  drawTransient(ctx, ov);
+  drawTransient(ctx, ov, v.xf);
 }
 
-function drawTransient(ctx: CanvasRenderingContext2D, ov: OverlayState) {
+function drawTransient(ctx: CanvasRenderingContext2D, ov: OverlayState, xf: PaneXform) {
   if (ov.marquee) {
     const m = ov.marquee;
     ctx.fillStyle = 'rgba(79,157,255,0.10)';
@@ -445,7 +446,11 @@ function drawTransient(ctx: CanvasRenderingContext2D, ov: OverlayState) {
     ctx.setLineDash([]);
   }
   if (ov.pen && ov.pen.pts.length) {
-    const pts = ov.pen.pts;
+    // comp space → screen
+    const pts = ov.pen.pts.map((q) => {
+      const p = compToScreen(xf, q.p);
+      return { p, i: [q.i[0] * xf.zoom, q.i[1] * xf.zoom], o: [q.o[0] * xf.zoom, q.o[1] * xf.zoom] };
+    });
     ctx.strokeStyle = '#5fd1ff';
     ctx.lineWidth = 1.4;
     ctx.beginPath();
@@ -454,15 +459,19 @@ function drawTransient(ctx: CanvasRenderingContext2D, ov: OverlayState) {
       const a = pts[k - 1], b = pts[k];
       ctx.bezierCurveTo(a.p[0] + a.o[0], a.p[1] + a.o[1], b.p[0] + b.i[0], b.p[1] + b.i[1], b.p[0], b.p[1]);
     }
+    ctx.stroke();
     if (ov.pen.cursor) {
+      // rubber band to the cursor (dashed; the placed part of the path stays solid)
       const a = pts[pts.length - 1];
+      ctx.beginPath();
+      ctx.moveTo(a.p[0], a.p[1]);
       ctx.setLineDash([4, 4]);
       ctx.bezierCurveTo(a.p[0] + a.o[0], a.p[1] + a.o[1], ov.pen.cursor[0], ov.pen.cursor[1], ov.pen.cursor[0], ov.pen.cursor[1]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
-    ctx.stroke();
-    ctx.setLineDash([]);
-    for (const p of pts) {
-      if (Math.hypot(p.o[0], p.o[1]) > 0.5) {
+    pts.forEach((p, k) => {
+      if (Math.hypot(p.o[0], p.o[1]) > 0.5 || Math.hypot(p.i[0], p.i[1]) > 0.5) {
         ctx.beginPath();
         ctx.moveTo(p.p[0] + p.i[0], p.p[1] + p.i[1]);
         ctx.lineTo(p.p[0] + p.o[0], p.p[1] + p.o[1]);
@@ -470,8 +479,10 @@ function drawTransient(ctx: CanvasRenderingContext2D, ov: OverlayState) {
         circle(ctx, p.p[0] + p.o[0], p.p[1] + p.o[1], 3, '#0c0e12', '#5fd1ff');
         circle(ctx, p.p[0] + p.i[0], p.p[1] + p.i[1], 3, '#0c0e12', '#5fd1ff');
       }
-      sq(ctx, p.p[0], p.p[1], 6, '#0c0e12', '#5fd1ff');
-    }
+      // the first point is the "close path" target once there is something to close
+      const closeTarget = k === 0 && pts.length >= 2;
+      sq(ctx, p.p[0], p.p[1], closeTarget ? 8 : 6, closeTarget ? '#5fd1ff' : '#0c0e12', '#5fd1ff');
+    });
   }
 }
 

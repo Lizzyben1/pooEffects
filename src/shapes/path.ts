@@ -220,6 +220,66 @@ export function pathFromSegs(segs: Seg[], closed: boolean): BezierPath {
   return { closed, v, i, o };
 }
 
+// ── vertex editing (pen tool) ───────────────────────────────────────────────
+
+/** Insert a vertex on segment `k` at parameter `t` without changing the shape. Returns the new path and vertex index. */
+export function insertVertex(p: BezierPath, k: number, t: number): { path: BezierPath; index: number } {
+  const n = p.v.length;
+  const j = (k + 1) % n;
+  const [a, b] = splitSeg(getSegment(p, k), Math.min(0.999, Math.max(0.001, t)));
+  const v = p.v.map((q) => [q[0], q[1]] as Vec2), i = p.i.map((q) => [q[0], q[1]] as Vec2), o = p.o.map((q) => [q[0], q[1]] as Vec2);
+  o[k] = [a[1][0] - a[0][0], a[1][1] - a[0][1]];
+  i[j] = [b[2][0] - b[3][0], b[2][1] - b[3][1]];
+  const m = a[3];
+  v.splice(k + 1, 0, [m[0], m[1]]);
+  i.splice(k + 1, 0, [a[2][0] - m[0], a[2][1] - m[1]]);
+  o.splice(k + 1, 0, [b[1][0] - m[0], b[1][1] - m[1]]);
+  return { path: { closed: p.closed, v, i, o }, index: k + 1 };
+}
+
+/** Remove a vertex. A path needs two vertices (three when closed); returns null when it cannot lose one. */
+export function removeVertex(p: BezierPath, vi: number): BezierPath | null {
+  const n = p.v.length;
+  if (vi < 0 || vi >= n || n <= (p.closed ? 3 : 2)) return null;
+  const drop = <T>(arr: T[]) => arr.filter((_, idx) => idx !== vi);
+  return { closed: p.closed, v: drop(p.v).map((q) => [q[0], q[1]] as Vec2), i: drop(p.i).map((q) => [q[0], q[1]] as Vec2), o: drop(p.o).map((q) => [q[0], q[1]] as Vec2) };
+}
+
+/** Corner ↔ smooth: a vertex with tangents becomes a corner; a corner gets tangents along its neighbours. */
+export function toggleVertexSmooth(p: BezierPath, vi: number): BezierPath {
+  const n = p.v.length;
+  const v = p.v.map((q) => [q[0], q[1]] as Vec2), i = p.i.map((q) => [q[0], q[1]] as Vec2), o = p.o.map((q) => [q[0], q[1]] as Vec2);
+  const smooth = Math.hypot(i[vi][0], i[vi][1]) > 1e-6 || Math.hypot(o[vi][0], o[vi][1]) > 1e-6;
+  if (smooth) {
+    i[vi] = [0, 0];
+    o[vi] = [0, 0];
+  } else {
+    const prev = p.closed || vi > 0 ? v[(vi - 1 + n) % n] : v[vi];
+    const next = p.closed || vi < n - 1 ? v[(vi + 1) % n] : v[vi];
+    const d: Vec2 = [(next[0] - prev[0]) / 6, (next[1] - prev[1]) / 6];
+    o[vi] = d;
+    i[vi] = [-d[0], -d[1]];
+  }
+  return { closed: p.closed, v, i, o };
+}
+
+/** Closest point on a path to `pt` after mapping through `map` (e.g. to screen space): segment, parameter, distance. */
+export function closestOnPath(p: BezierPath, pt: number[], map: (q: Vec2) => number[] | null): { k: number; t: number; dist: number } | null {
+  let best: { k: number; t: number; dist: number } | null = null;
+  const c = segmentCount(p);
+  for (let k = 0; k < c; k++) {
+    const seg = getSegment(p, k);
+    for (let s = 1; s < 24; s++) {
+      const t = s / 24;
+      const q = map(pointOnSeg(seg, t));
+      if (!q) continue;
+      const dist = Math.hypot(q[0] - pt[0], q[1] - pt[1]);
+      if (!best || dist < best.dist) best = { k, t, dist };
+    }
+  }
+  return best;
+}
+
 export function pathLength(p: BezierPath): number {
   let L = 0;
   const c = segmentCount(p);

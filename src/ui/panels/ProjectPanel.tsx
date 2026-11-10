@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, FolderPlus, Plus, Trash, Upload, Search, Folder, FolderOpen } from 'lucide-react';
 import type { Composition, Footage, Project } from '../../core/types';
-import { getApp, openContextMenu, openDialog, setApp, useApp } from '../../state/store';
+import { openContextMenu, openDialog, setApp, useApp } from '../../state/store';
 import * as A from '../../state/actions';
 import { LayerTypeIcon } from '../icons';
 import { getMedia, onMediaChange } from '../../state/media';
 import { host, renderOptions } from '../../state/engine';
-import { commands as C, importFiles, addToRenderQueue } from '../commands';
-import { createFootageLayer, createPrecompLayer } from '../../core/factory';
+import { commands as C, DND_ITEM, addProjectItemToComp, addToRenderQueue, importFiles, newCompFromFootage } from '../commands';
 import { formatTime } from '../../core/time';
 
 type Item = { id: string; kind: 'folder' | 'comp' | 'footage'; name: string; folderId: string | null };
@@ -24,16 +23,6 @@ function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1048576).toFixed(1)} MB`;
-}
-
-export function addItemToComp(id: string) {
-  const s = getApp();
-  const comp = s.activeCompId ? s.project.comps[s.activeCompId] : null;
-  if (!comp) return;
-  const f = s.project.footage[id];
-  if (f) A.addLayer(comp.id, createFootageLayer(comp, f), { index: 0 });
-  const c = s.project.comps[id];
-  if (c && c.id !== comp.id) A.addLayer(comp.id, createPrecompLayer(comp, c), { index: 0 });
 }
 
 function CompThumb({ comp }: { comp: Composition }) {
@@ -106,19 +95,15 @@ export function ProjectPanel() {
       ...(it.kind === 'comp' ? [
         { label: 'Open Composition', action: () => A.openComp(it.id) },
         { label: 'Composition Settings…', action: () => openDialog({ kind: 'compSettings', compId: it.id }) },
+        { label: 'Add to Active Composition', disabled: !activeComp || activeComp === it.id, action: () => addProjectItemToComp(it.id) },
         { label: 'Duplicate', action: () => A.duplicateComp(it.id) },
         { label: 'Add to Render Queue', action: () => addToRenderQueue(it.id) },
         { separator: true },
       ] : []),
       ...(it.kind === 'footage' ? [
         { label: 'Interpret Footage…', action: () => openDialog({ kind: 'interpret', footageId: it.id }) },
-        { label: 'Add to Active Composition', disabled: !activeComp, action: () => addItemToComp(it.id) },
-        { label: 'New Comp from Footage', action: () => {
-          const f = project.footage[it.id];
-          const id = A.newComp({ name: f.name.replace(/\.[^.]+$/, ''), width: f.width || 1920, height: f.height || 1080, duration: f.duration > 0 ? f.duration : 10, frameRate: f.kind === 'video' ? f.frameRate : 30 });
-          const c = getApp().project.comps[id];
-          if (c) A.addLayer(id, createFootageLayer(c, f), { index: 0 });
-        } },
+        { label: 'Add to Active Composition', disabled: !activeComp, action: () => addProjectItemToComp(it.id) },
+        { label: 'New Comp from Footage', action: () => void newCompFromFootage(it.id) },
         { separator: true },
       ] : []),
       { label: 'Rename…', action: () => openDialog({ kind: 'rename', title: 'Rename', value: it.name, onSubmit: (v) => A.renameItem(it.id, v) }) },
@@ -142,14 +127,14 @@ export function ProjectPanel() {
             style={{ paddingLeft: 8 + depth * 14 }}
             draggable={it.kind !== 'folder'}
             onDragStart={(e) => {
-              e.dataTransfer.setData('application/x-poo-item', it.id);
+              e.dataTransfer.setData(DND_ITEM, it.id);
               e.dataTransfer.effectAllowed = 'copy';
             }}
             onDragOver={(e) => {
-              if (it.kind === 'folder' && e.dataTransfer.types.includes('application/x-poo-item')) e.preventDefault();
+              if (it.kind === 'folder' && e.dataTransfer.types.includes(DND_ITEM)) e.preventDefault();
             }}
             onDrop={(e) => {
-              const id = e.dataTransfer.getData('application/x-poo-item');
+              const id = e.dataTransfer.getData(DND_ITEM);
               if (id && it.kind === 'folder') {
                 e.preventDefault();
                 A.moveToFolder([id], it.id);
@@ -158,7 +143,7 @@ export function ProjectPanel() {
             onClick={(e) => select(it.id, e)}
             onDoubleClick={() => {
               if (it.kind === 'comp') A.openComp(it.id);
-              else if (it.kind === 'footage') addItemToComp(it.id);
+              else if (it.kind === 'footage') addProjectItemToComp(it.id);
               else setOpen({ ...open, [it.id]: !isOpen });
             }}
             onContextMenu={(e) => menu(it, e)}
@@ -242,7 +227,22 @@ export function ProjectPanel() {
         </div>
       </div>
       <div className="pj-head"><span>Name</span><span>Info</span></div>
-      <div className="scroll pj-list" ref={listRef} onClick={(e) => e.target === listRef.current && setApp({ selItems: [] })}>
+      <div
+        className="scroll pj-list"
+        ref={listRef}
+        onClick={(e) => e.target === listRef.current && setApp({ selItems: [] })}
+        onDragOver={(e) => {
+          if (e.target === listRef.current && e.dataTransfer.types.includes(DND_ITEM)) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          // dropping on empty space takes the item out of its folder
+          const id = e.dataTransfer.getData(DND_ITEM);
+          if (id && e.target === listRef.current) {
+            e.preventDefault();
+            A.moveToFolder([id], null);
+          }
+        }}
+      >
         {renderTree(null, 0)}
         {!items.length && <div className="empty" style={{ minHeight: 120 }}><div>Empty project.<br />Import files or create a composition.</div></div>}
       </div>

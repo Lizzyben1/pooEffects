@@ -6,7 +6,7 @@ import { closeComp, openComp } from '../../state/actions';
 import type { Resolution } from '../../state/uiTypes';
 import type { ViewKind } from '../../render/projection';
 import { MotionBlurIcon, Logo } from '../icons';
-import { commands as C, saveFramePng, importFiles } from '../commands';
+import { commands as C, DND_ITEM, addProjectItemToComp, saveFramePng, importFiles } from '../commands';
 import { useTimeState } from '../../state/time';
 
 const ZOOMS = [0.125, 0.25, 0.333, 0.5, 0.667, 1, 1.5, 2, 4, 8];
@@ -43,7 +43,10 @@ export function ViewerPanel() {
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
-          void importFiles([...e.dataTransfer.files]);
+          // a project item dropped on the empty viewer opens it (footage gets a comp of its own)
+          const item = e.dataTransfer.getData(DND_ITEM);
+          if (item) addProjectItemToComp(item);
+          else if (e.dataTransfer.files.length) void importFiles([...e.dataTransfer.files]);
         }}
       >
         <div>

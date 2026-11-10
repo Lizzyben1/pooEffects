@@ -9,20 +9,22 @@ import {
 } from '../../state/store';
 import { getTime, timeStore } from '../../state/time';
 import { renderForView, setViewParams } from '../../state/engine';
+import * as cache from '../../state/cache';
 import * as M from '../../math/mat4';
 import {
   compPxRay, compToScreen, hitLayer, layerBounds, layerPointToScreen, layerQuad, makeViewCtx, rayPlane, screenToComp, viewForward, worldDeltaToParent,
   type PaneXform, type ViewCtx,
 } from './geometry';
-import { drawOverlay, hitHandle, type HandleHit, type OverlayState } from './overlay';
+import { drawOverlay, editablePaths, hitHandle, type HandleHit, type OverlayState } from './overlay';
 import {
-  addLayer, addMask, addShapeItem, openComp, selectLayers, setKeyframeValue, setPropValue, setSourceText, setSpatialTangents, deselectAll,
+  addEffect, addEffectToSelection, addLayer, addMask, addShapeItem, openComp, selectLayers, setKeyframeValue, setPropValue, setSourceText, setSpatialTangents, deselectAll,
 } from '../../state/actions';
+import { DND_EFFECT, DND_ITEM, addProjectItemToComp } from '../commands';
 import { getProp } from '../../core/props';
 import { keyframedValue } from '../../anim/interpolate';
 import { FrameEval, toCompTime, toLayerTime } from '../../core/evaluate';
 import { normalize } from '../../math/vec';
-import { apply2d, invert2d, type Mat2d } from '../../shapes/path';
+import { apply2d, closestOnPath, insertVertex, invert2d, removeVertex, toggleVertexSmooth, type Mat2d } from '../../shapes/path';
 import {
   createCameraLayer, createEllipse, createFill, createGroup, createPathItem, createPolystar, createRect, createShapeLayer, createStroke, createTextLayer, ellipsePath, rectPath,
 } from '../../core/factory';
@@ -33,6 +35,7 @@ import { camPointsInRect, drawTrackOverlay, featureCenterAt, hitTrack, screenToL
 import { createAtTrackPoints, editTrackPoint, findTracker, getTracking, isTrackable, setGroundPlane, setTracking, useTracking } from '../../state/tracking';
 import { addRotoPoint, useRoto } from '../../state/roto';
 import { trackPointer, useWheel, wheelDelta } from '../pointer';
+import { findGroupOf } from '../dock/layout';
 
 interface Props {
   comp: Composition;
@@ -140,7 +143,9 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       try {
         ctx.drawImage(b, tl[0], tl[1], w, h);
       } catch {
-        img.current.bmp = null;
+        // the bitmap was closed elsewhere: forget it and ask for the frame again
+        img.current = { bmp: null, cached: false, time: -1 };
+        requestRender();
       }
     }
   };
@@ -203,6 +208,17 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     ctx.stroke();
   };
 
+  /** Swap the displayed frame. Cache-owned bitmaps are pinned while on screen so eviction cannot close them under us. */
+  const showFrame = (bmp: ImageBitmap | null, cached: boolean, time: number) => {
+    const prev = img.current;
+    if (bmp && cached) cache.pin(bmp);
+    if (prev.bmp) {
+      if (prev.cached) cache.unpin(prev.bmp);
+      else if (prev.bmp !== bmp) prev.bmp.close();
+    }
+    img.current = { bmp, cached, time };
+  };
+
   // ── render requests ──
   const doRender = async () => {
     renderPending.current = false;
@@ -217,9 +233,7 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       return;
     }
     drawnSeq.current = id;
-    const prev = img.current;
-    if (prev.bmp && !prev.cached && prev.bmp !== r.bitmap) prev.bmp.close();
-    img.current = { bmp: r.bitmap, cached: r.cached, time: t };
+    showFrame(r.bitmap, r.cached, t);
     paintImage();
   };
 
@@ -273,10 +287,7 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size.w, size.h, isActivePane]);
 
-  useEffect(() => () => {
-    const b = img.current.bmp;
-    if (b && !img.current.cached) b.close();
-  }, []);
+  useEffect(() => () => showFrame(null, false, -1), []);
 
   // space-bar temporary hand tool
   useEffect(() => {
@@ -917,19 +928,79 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     addLayer(comp.id, layer, { index: 0 });
   }
 
+  /** An editable path of a selected layer under the cursor: a vertex, or a point on a segment. */
+  function penTarget(v: ViewCtx, sx: number, sy: number): { layer: Layer; path: string; value: BezierPath; vi?: number; k?: number; t?: number } | null {
+    const app = getApp();
+    for (const l of v.comp.layers) {
+      if (!app.selLayers.includes(l.id) || l.locked) continue;
+      for (const ep of editablePaths(v, l, app)) {
+        const S = (q: number[]) => layerPointToScreen(v, l, ep.matrix ? apply2d(ep.matrix, q) : q);
+        for (let vi = 0; vi < ep.value.v.length; vi++) {
+          const p = S(ep.value.v[vi]);
+          if (p && Math.hypot(p[0] - sx, p[1] - sy) <= 7) return { layer: l, path: ep.path, value: ep.value, vi };
+        }
+        const c = closestOnPath(ep.value, [sx, sy], S);
+        if (c && c.dist <= 5) return { layer: l, path: ep.path, value: ep.value, k: c.k, t: c.t };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Pen tool. On an existing path of the selected layer: click a segment to add a vertex, click a vertex
+   * to delete it, Alt+click a vertex to switch it between corner and smooth. Elsewhere: click to place
+   * corner points, drag to pull out tangents, click the first point to close, Enter / double-click to
+   * finish an open path, Backspace to remove the last point, Esc to cancel.
+   */
   function penDown(e: React.PointerEvent, sx: number, sy: number) {
+    const v = vctx();
+    if (!ov.current.pen) {
+      const hit = penTarget(v, sx, sy);
+      if (hit) {
+        let next: BezierPath | null = null;
+        if (hit.vi !== undefined) {
+          next = e.altKey ? toggleVertexSmooth(hit.value, hit.vi) : removeVertex(hit.value, hit.vi);
+          if (!next) toast('A path needs at least two points — delete the mask or shape instead', 'info', 2500);
+          ov.current.selectedVertex = next && e.altKey ? { path: hit.path, vi: hit.vi } : null;
+        } else {
+          const ins = insertVertex(hit.value, hit.k!, hit.t!);
+          next = ins.path;
+          ov.current.selectedVertex = { path: hit.path, vi: ins.index };
+        }
+        if (next) setPropValue(comp.id, hit.layer.id, hit.path, next);
+        paintOverlay();
+        return;
+      }
+    }
     const pen = ov.current.pen ?? { pts: [], cursor: null };
     ov.current.pen = pen;
-    if (pen.pts.length >= 2 && Math.hypot(pen.pts[0].p[0] - sx, pen.pts[0].p[1] - sy) < 8) {
-      finishPen(true);
+    const toC = (x: number, y: number) => screenToComp(xfRef.current, x, y) as [number, number];
+    const first = pen.pts[0];
+    const firstS = first ? compToScreen(xfRef.current, first.p) : null;
+    if (first && firstS && pen.pts.length >= 2 && Math.hypot(firstS[0] - sx, firstS[1] - sy) < 9) {
+      // closing click: dragging shapes the curve arriving at the first point
+      const x0 = e.clientX, y0 = e.clientY;
+      drag((ev) => {
+        const dx = (ev.clientX - x0) / xfRef.current.zoom, dy = (ev.clientY - y0) / xfRef.current.zoom;
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 3) return;
+        first.i = [-dx, -dy];
+        if (!ev.altKey) first.o = [dx, dy];
+      }, () => finishPen(true), false);
       return;
     }
-    const pt = { p: [sx, sy] as [number, number], i: [0, 0] as [number, number], o: [0, 0] as [number, number] };
+    // the second click of a double-click lands on the point just placed: finish instead of stacking a duplicate
+    const last = pen.pts[pen.pts.length - 1];
+    const lastS = last ? compToScreen(xfRef.current, last.p) : null;
+    if (last && lastS && pen.pts.length >= 2 && Math.hypot(lastS[0] - sx, lastS[1] - sy) < 4) {
+      finishPen(false);
+      return;
+    }
+    const pt = { p: toC(sx, sy), i: [0, 0] as [number, number], o: [0, 0] as [number, number] };
     pen.pts.push(pt);
     const x0 = e.clientX, y0 = e.clientY;
     drag((ev) => {
-      const dx = ev.clientX - x0, dy = ev.clientY - y0;
-      if (Math.hypot(dx, dy) < 3) return;
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 3) return;
+      const dx = (ev.clientX - x0) / xfRef.current.zoom, dy = (ev.clientY - y0) / xfRef.current.zoom;
       pt.o = [dx, dy];
       pt.i = [-dx, -dy];
     }, undefined, false);
@@ -944,19 +1015,19 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     const app = getApp();
     const v = vctx();
     const sel = v.comp.layers.find((l) => app.selLayers.includes(l.id) && !l.locked);
-    const toComp = (p: [number, number]) => screenToComp(v.xf, p[0], p[1]);
+    // points are stored in comp pixels; `map` takes them into the space the path will live in
     const build = (map: (c: number[]) => number[]): BezierPath => ({
       closed,
       v: pen.pts.map((q) => {
-        const c = map(toComp(q.p));
+        const c = map(q.p);
         return [c[0], c[1]] as Vec2;
       }),
       i: pen.pts.map((q) => {
-        const a = map(toComp(q.p)), b = map(toComp([q.p[0] + q.i[0], q.p[1] + q.i[1]]));
+        const a = map(q.p), b = map([q.p[0] + q.i[0], q.p[1] + q.i[1]]);
         return [b[0] - a[0], b[1] - a[1]] as Vec2;
       }),
       o: pen.pts.map((q) => {
-        const a = map(toComp(q.p)), b = map(toComp([q.p[0] + q.o[0], q.p[1] + q.o[1]]));
+        const a = map(q.p), b = map([q.p[0] + q.o[0], q.p[1] + q.o[1]]);
         return [b[0] - a[0], b[1] - a[1]] as Vec2;
       }),
     });
@@ -966,6 +1037,7 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     };
     if (sel && sel.type !== 'shape' && sel.type !== 'camera' && sel.type !== 'light' && sel.type !== 'null' && sel.type !== 'audio') {
       addMask(comp.id, sel.id, build(toLayer(sel)));
+      toast(closed ? 'Mask added' : 'Open mask path added', 'success', 1500);
       return;
     }
     const stroke = createStroke([1, 1, 1, 1], 4);
@@ -981,21 +1053,67 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     addLayer(comp.id, layer, { index: 0 });
   }
 
+  // keys that belong to the viewer while a path is being drawn or a vertex is selected. Capture phase:
+  // they must not reach the global shortcuts (Delete would remove the whole layer).
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
-      if (!ov.current.pen) return;
-      if (e.key === 'Enter') {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const pen = ov.current.pen;
+      const swallow = () => {
         e.preventDefault();
         e.stopPropagation();
-        finishPen(false);
-      } else if (e.key === 'Escape') {
-        ov.current.pen = null;
+      };
+      if (pen) {
+        if (e.key === 'Enter') {
+          swallow();
+          finishPen(false);
+        } else if (e.key === 'Escape') {
+          swallow();
+          ov.current.pen = null;
+          paintOverlay();
+        } else if (e.key === 'Backspace' || e.key === 'Delete') {
+          swallow();
+          pen.pts.pop();
+          if (!pen.pts.length) ov.current.pen = null;
+          paintOverlay();
+        }
+        return;
+      }
+      // Delete removes the selected path vertex (not the layer)
+      const sv = ov.current.selectedVertex;
+      if (sv && isActivePane && (e.key === 'Backspace' || e.key === 'Delete') && getApp().focusedPanel === 'viewer' && !getApp().selKeys.length) {
+        const app = getApp();
+        const layer = compRef.current.layers.find((l) => app.selLayers.includes(l.id) && !!getProp(l, sv.path));
+        const prop = layer ? getProp(layer, sv.path) : undefined;
+        if (!layer || !prop) return;
+        const cur = (prop.keyframes.length ? keyframedValue(prop, toLayerTime(layer, getTime(comp.id))) : prop.value) as BezierPath;
+        const next = removeVertex(cur, sv.vi);
+        swallow();
+        if (!next) {
+          toast('A path needs at least two points — delete the mask or shape instead', 'info', 2500);
+          return;
+        }
+        ov.current.selectedVertex = null;
+        setPropValue(comp.id, layer.id, sv.path, next);
         paintOverlay();
       }
     };
     window.addEventListener('keydown', k, true);
     return () => window.removeEventListener('keydown', k, true);
   });
+
+  // leaving the pen tool commits the path in progress (as an open path)
+  useEffect(() => {
+    if (tool !== 'pen' && ov.current.pen) {
+      if (ov.current.pen.pts.length >= 2) finishPen(false);
+      else {
+        ov.current.pen = null;
+        paintOverlay();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool]);
 
   function textClick(sx: number, sy: number, v: ViewCtx) {
     const hit = hitLayer(v, sx, sy);
@@ -1028,6 +1146,8 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
   const textSelectAll = useRef(false);
 
   const onDoubleClick = (e: React.MouseEvent) => {
+    // double-click actions belong to the selection tool (the pen uses a double-click to finish a path)
+    if (tool !== 'select') return;
     const [sx, sy] = local(e);
     const v = vctx();
     const hit = hitLayer(v, sx, sy);
@@ -1063,11 +1183,18 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     infoSample(sx, sy);
     if (ov.current.pen) {
       ov.current.pen.cursor = [sx, sy];
+      wrap.current!.style.cursor = 'crosshair';
       paintOverlay();
       return;
     }
     if (e.buttons) return;
     const v = vctx();
+    if (tool === 'pen') {
+      // over an existing path the pen adds a vertex (segment) or removes / converts one (vertex)
+      const pt = penTarget(v, sx, sy);
+      wrap.current!.style.cursor = !pt ? 'crosshair' : pt.vi !== undefined ? (e.altKey ? 'alias' : 'not-allowed') : 'copy';
+      return;
+    }
     const th = tool === 'select' ? hitTrack(v, app, getTracking(), sx, sy) : null;
     if (JSON.stringify(th) !== JSON.stringify(trackHover.current)) {
       trackHover.current = th;
@@ -1098,22 +1225,33 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
   const infoPending = useRef(false);
   const infoSample = (sx: number, sy: number) => {
     if (infoPending.current) return;
+    // nobody is looking at the numbers unless the Info panel is the visible tab of its group
+    const app = getApp();
+    const group = findGroupOf(app.layout, 'info');
+    if (!group || group.active !== 'info' || (app.maximized && app.maximized !== 'info')) return;
     infoPending.current = true;
     requestAnimationFrame(() => {
       infoPending.current = false;
-      const c = imgCanvas.current;
-      if (!c) return;
       const cp = screenToComp(xfRef.current, sx, sy);
+      const bmp = img.current.bmp;
       let rgba: number[] | undefined;
-      if (cp[0] >= 0 && cp[1] >= 0 && cp[0] < comp.width && cp[1] < comp.height) {
+      if (bmp && cp[0] >= 0 && cp[1] >= 0 && cp[0] < comp.width && cp[1] < comp.height) {
+        // Reading back from the big viewer canvas makes the browser move it off the GPU for good;
+        // sample one pixel of the frame through a tiny software canvas instead.
         try {
-          const d = c.getContext('2d')!.getImageData(Math.round(sx * dpr), Math.round(sy * dpr), 1, 1).data;
+          const ctx = pixelProbe();
+          ctx.clearRect(0, 0, 1, 1);
+          ctx.drawImage(bmp, Math.min(bmp.width - 1, Math.floor((cp[0] / comp.width) * bmp.width)), Math.min(bmp.height - 1, Math.floor((cp[1] / comp.height) * bmp.height)), 1, 1, 0, 0, 1, 1);
+          const d = ctx.getImageData(0, 0, 1, 1).data;
           rgba = [d[0], d[1], d[2], d[3]];
         } catch {
           rgba = undefined;
         }
       }
-      setApp({ info: { x: cp[0], y: cp[1], rgba } });
+      const prev = getApp().info;
+      const x = Math.round(cp[0]), y = Math.round(cp[1]);
+      if (prev.x === x && prev.y === y && String(prev.rgba) === String(rgba)) return;
+      setApp({ info: { x, y, rgba } });
     });
   };
 
@@ -1180,6 +1318,31 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       onPointerMove={onPointerMove}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
+      onDragOver={(e) => {
+        // footage / comps dragged from the Project panel, effects dragged from Effects & Presets
+        if (e.dataTransfer.types.includes(DND_ITEM) || e.dataTransfer.types.includes(DND_EFFECT)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+        }
+      }}
+      onDrop={(e) => {
+        const item = e.dataTransfer.getData(DND_ITEM);
+        const fx = e.dataTransfer.getData(DND_EFFECT);
+        if (!item && !fx) return;
+        e.preventDefault();
+        activateMe();
+        if (item) {
+          addProjectItemToComp(item);
+          return;
+        }
+        // an effect lands on the layer under the cursor, else on the selection
+        const [sx, sy] = local(e);
+        const hit = hitLayer(vctx(), sx, sy);
+        if (hit) {
+          if (!getApp().selLayers.includes(hit.id)) selectLayers([hit.id]);
+          addEffect(comp.id, hit.id, fx);
+        } else addEffectToSelection(fx);
+      }}
     >
       <canvas ref={imgCanvas} className="view-canvas" style={{ width: size.w, height: size.h }} />
       <canvas ref={ovCanvas} className="view-overlay" style={{ width: size.w, height: size.h }} />
@@ -1208,6 +1371,18 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       )}
     </div>
   );
+}
+
+let probeCtx: CanvasRenderingContext2D | null = null;
+/** 1×1 software canvas used to read single pixels of a frame. */
+function pixelProbe(): CanvasRenderingContext2D {
+  if (!probeCtx) {
+    const c = document.createElement('canvas');
+    c.width = 1;
+    c.height = 1;
+    probeCtx = c.getContext('2d', { willReadFrequently: true })!;
+  }
+  return probeCtx;
 }
 
 const VIEW_LABELS: Record<string, string> = {

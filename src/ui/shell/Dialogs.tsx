@@ -401,14 +401,15 @@ function PrecomposeDialog({ compId, layerIds }: { compId: string; layerIds: stri
   const [moveAll, setMoveAll] = useState(true);
   const [open, setOpen] = useState(false);
   if (!comp) return null;
-  const single = layerIds.length === 1;
+  // leaving attributes behind only makes sense for one layer that has its own pixel size
+  const single = layerIds.length === 1 && A.canLeaveAttributes(comp.layers.find((l) => l.id === layerIds[0]));
   const submit = () => {
     const id = A.precompose(compId, layerIds, name.trim() || 'Pre-comp 1', single ? moveAll : true);
     if (id && open) A.openComp(id);
     closeDialog();
   };
   return (
-    <Dialog title="Pre-compose" sub={`${layerIds.length} layer${single ? '' : 's'} from ${comp.name}`} icon={<Layers size={17} style={{ color: 'var(--accent)' }} />} onClose={closeDialog} width={500} footer={<Foot onOk={submit} />}>
+    <Dialog title="Pre-compose" sub={`${layerIds.length} layer${layerIds.length === 1 ? '' : 's'} from ${comp.name}`} icon={<Layers size={17} style={{ color: 'var(--accent)' }} />} onClose={closeDialog} width={500} footer={<Foot onOk={submit} />}>
       <div onKeyDown={enterKey(submit)}>
         <div className="form-grid">
           <Row label="New comp name"><input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} /></Row>
@@ -416,7 +417,7 @@ function PrecomposeDialog({ compId, layerIds }: { compId: string; layerIds: stri
         <div className="radio-list">
           <button className={`radio${!moveAll && single ? ' on' : ''}`} disabled={!single} onClick={() => setMoveAll(false)}>
             <span className="radio-dot" />
-            <span><b>Leave all attributes in “{comp.name}”</b><em>Keeps transforms, effects and masks on the new precomp layer. Single layers only.</em></span>
+            <span><b>Leave all attributes in “{comp.name}”</b><em>Keeps the transform, effects, masks and timing on the layer; only its source moves into a new comp of the same size. For a single solid, footage or precomp layer.</em></span>
           </button>
           <button className={`radio${moveAll || !single ? ' on' : ''}`} onClick={() => setMoveAll(true)}>
             <span className="radio-dot" />
