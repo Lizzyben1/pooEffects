@@ -8,6 +8,8 @@ import type { DockNode, PanelId } from '../../state/uiTypes';
 import { getApp, setApp, useApp, openContextMenu } from '../../state/store';
 import { activatePanel, movePanel, removePanel, setSizes, type DropZone } from './layout';
 import { PANELS } from '../panels/registry';
+import { ErrorBoundary } from '../controls/ErrorBoundary';
+import { PanelCrash } from '../shell/Recovery';
 import { WORKSPACES } from './workspaces';
 import { trackPointer } from '../pointer';
 
@@ -232,7 +234,9 @@ function PanelGroup({ node, maximizedView }: { node: Extract<DockNode, { type: '
         </div>
       </div>
       <div className="panel-body">
-        <Body />
+        <ErrorBoundary key={node.active} fallback={(error, retry) => <PanelCrash title={def.title} error={error} retry={retry} />}>
+          <Body />
+        </ErrorBoundary>
       </div>
     </div>
   );

@@ -30,6 +30,7 @@ import * as M from '../math/mat4';
 import { analysisComp, cancelJob, newJobId, runJob } from '../cv/host';
 import type { CameraSolution, FromCV } from '../cv/jobs';
 import { mat3Mul, mat3T, mat3Vec, matToEulerXYZ, normalize3, cross3, dot3, symEig, type V3 } from '../cv/linalg';
+import { guardListeners } from '../core/guard';
 
 // ── UI / job state ──────────────────────────────────────────────────────────
 
@@ -71,6 +72,7 @@ export interface TrackingState {
 export const useTracking = create<TrackingState>()(() => ({
   job: null, active: null, activePoint: null, live: null, camSel: [], camHover: null, showTrackPoints: true, mode: 'motion', lastResult: null,
 }));
+guardListeners(useTracking, 'tracking');
 export const getTracking = () => useTracking.getState();
 export const setTracking = (p: Partial<TrackingState>) => useTracking.setState(p);
 

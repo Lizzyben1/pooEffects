@@ -205,6 +205,7 @@ export function applyPreset(id: string): void {
     return;
   }
   const t = getTime(comp.id);
+  const before = getApp().project;
   doc((d) => {
     const c = d.comps[comp.id];
     for (const l of c.layers) {
@@ -212,5 +213,10 @@ export function applyPreset(id: string): void {
       preset.apply(l, toLayerTime(l as Layer, t), d as Project);
     }
   });
+  // say so when a preset found nothing to act on, instead of claiming success
+  if (getApp().project === before) {
+    toast(preset.id === 'loop' ? 'Loop Keyframes needs at least two keyframes on a transform property of the selected layer' : `“${preset.name}” had nothing to change on the selected layer`, 'warn', 4000);
+    return;
+  }
   toast(`Applied preset “${preset.name}”`, 'success', 1800);
 }

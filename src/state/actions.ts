@@ -1284,10 +1284,12 @@ export function deleteProjectItems(ids: string[]): void {
 }
 
 export function renameItem(id: string, name: string): void {
+  const next = name.trim();
+  if (!next) return; // an item without a name cannot be found or clicked again
   doc((d) => {
-    if (d.comps[id]) d.comps[id].name = name;
-    else if (d.footage[id]) d.footage[id].name = name;
-    else if (d.folders[id]) d.folders[id].name = name;
+    if (d.comps[id]) d.comps[id].name = next;
+    else if (d.footage[id]) d.footage[id].name = next;
+    else if (d.folders[id]) d.folders[id].name = next;
   });
 }
 
@@ -1300,9 +1302,17 @@ export function newFolder(name = 'New Folder', parent: string | null = null): st
 }
 
 export function moveToFolder(ids: string[], folderId: string | null): void {
+  const folders = getApp().project.folders;
+  if (folderId && !folders[folderId]) return;
+  /** `folderId` is `id` itself or somewhere inside it: moving `id` there would detach both from the tree */
+  const inside = (id: string): boolean => {
+    for (let f: string | null | undefined = folderId, n = 0; f && n < 1000; f = folders[f]?.folderId, n++) if (f === id) return true;
+    return false;
+  };
+  const movable = ids.filter((id) => !inside(id));
+  if (!movable.length) return;
   doc((d) => {
-    for (const id of ids) {
-      if (id === folderId) continue;
+    for (const id of movable) {
       if (d.comps[id]) d.comps[id].folderId = folderId;
       else if (d.footage[id]) d.footage[id].folderId = folderId;
       else if (d.folders[id]) d.folders[id].folderId = folderId;

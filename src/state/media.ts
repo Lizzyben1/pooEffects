@@ -345,7 +345,13 @@ export async function restoreMedia(footage: Footage[]): Promise<void> {
     footage.map(async (f) => {
       if (entries.has(f.id) || f.procedural) return;
       const blob = await idbGet<Blob>('media', f.id);
-      if (blob) await registerMedia(f.id, blob, false);
+      if (!blob) return;
+      try {
+        await registerMedia(f.id, blob, false);
+      } catch (e) {
+        // a blob the browser can no longer decode leaves that footage offline, not the app unbootable
+        console.warn(`[media] could not restore ${f.name}`, e);
+      }
     }),
   );
 }
@@ -407,6 +413,16 @@ export async function importFile(file: File): Promise<Footage | null> {
         height = r.h;
         duration = r.duration;
       }
+    }
+    if (!(duration > 0) || (hasVideo && !(width > 0 && height > 0))) {
+      // No picture could be read. It may still be a plain audio file the demuxer does not know; anything
+      // else is refused rather than added as footage that can never play.
+      const audio = await decodeAudio(file);
+      if (!audio || !(audio.duration > 0)) throw new Error(`${name} could not be read`);
+      duration = audio.duration;
+      hasVideo = false;
+      hasAudio = true;
+      width = height = 0;
     }
     f = createFootage({
       name, kind: hasVideo ? 'video' : 'audio', mime: type, width, height, duration, frameRate: fps || 30,

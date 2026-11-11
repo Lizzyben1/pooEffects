@@ -32,8 +32,7 @@ export async function saveProjectFile(): Promise<void> {
       const writable = await (activeFileHandle as unknown as { createWritable: () => Promise<FileSystemWritableFileStream> }).createWritable();
       await writable.write(blob);
       await writable.close();
-      setApp({ dirty: false, fileName: activeFileHandle.name });
-      toast(`Saved ${activeFileHandle.name}`, 'success');
+      saved(activeFileHandle.name);
       return;
     } catch {
       activeFileHandle = null;
@@ -50,8 +49,7 @@ export async function saveProjectFile(): Promise<void> {
       await writable.write(blob);
       await writable.close();
       activeFileHandle = handle;
-      setApp({ dirty: false, fileName: handle.name });
-      toast(`Saved ${handle.name}`, 'success');
+      saved(handle.name);
       return;
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;
@@ -59,8 +57,21 @@ export async function saveProjectFile(): Promise<void> {
   }
 
   downloadBlob(blob, name);
+  saved(name);
+}
+
+function saved(name: string): void {
   setApp({ dirty: false, fileName: name });
+  writeAutosave();
   toast(`Saved ${name}`, 'success');
+}
+
+/** A project file can come from anywhere: check the parts the app dereferences without asking. */
+function isProject(p: unknown): p is Project {
+  const o = p as Project | null;
+  if (!o || typeof o !== 'object' || o.format !== 'pooeffects') return false;
+  if (!o.comps || typeof o.comps !== 'object' || !o.footage || typeof o.footage !== 'object') return false;
+  return Object.values(o.comps).every((c) => c && Array.isArray(c.layers) && c.width > 0 && c.height > 0 && c.duration > 0 && c.frameRate > 0);
 }
 
 export async function openProjectFile(file: File, handle?: FileSystemFileHandle): Promise<void> {
@@ -71,19 +82,31 @@ export async function openProjectFile(file: File, handle?: FileSystemFileHandle)
     const json = files['project.json'];
     if (!json) throw new Error('project.json missing');
     const project = JSON.parse(strFromU8(json)) as Project;
-    if (project.format !== 'pooeffects') throw new Error('Not a pooEffects project');
+    if (!isProject(project)) throw new Error('Not a pooEffects project');
+    project.folders ??= {};
+    project.settings ??= { expressionsEnabled: true, timeDisplay: 'timecode', frameStart: 0 };
     clearCache();
+    // one unreadable media file must not cost the whole project: its footage item shows as missing
+    const failed: string[] = [];
     for (const [path, data] of Object.entries(files)) {
       if (!path.startsWith('media/')) continue;
       const id = path.slice(6);
       const f = project.footage[id];
-      await registerMedia(id, new File([data.slice().buffer as ArrayBuffer], f?.name ?? id, { type: f?.mime || '' }));
+      try {
+        await registerMedia(id, new File([data.slice().buffer as ArrayBuffer], f?.name ?? id, { type: f?.mime || '' }));
+      } catch {
+        failed.push(f?.name ?? id);
+      }
     }
     importMatteArchive(project, files);
     loadProject(project, file.name);
-    toast(`Opened ${file.name}`, 'success');
+    writeAutosave();
+    if (failed.length) toast(`Opened ${file.name}, but ${failed.length} media file${failed.length > 1 ? 's' : ''} could not be read: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`, 'error', 7000);
+    else toast(`Opened ${file.name}`, 'success');
   } catch (e) {
-    toast(`Could not open project: ${(e as Error).message}`, 'error', 5000);
+    activeFileHandle = null;
+    const msg = (e as Error).message;
+    toast(`Could not open ${file.name}: ${/invalid zip|unexpected|JSON/i.test(msg) ? 'the file is damaged or is not a pooEffects project' : msg}`, 'error', 6000);
   }
 }
 
@@ -112,19 +135,47 @@ export async function pickFiles(accept: string, multiple = true): Promise<File[]
 
 // ── autosave ────────────────────────────────────────────────────────────────
 
+export interface Autosave {
+  project: Project;
+  savedAt: number;
+  fileName: string | null;
+  /** the session had changes that were never written to a file */
+  dirty?: boolean;
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Store the session now (also cancels a pending debounced write). */
+function writeAutosave(): void {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  const s = getApp();
+  if (!s.prefs.autoSave) return;
+  void idbPut('meta', 'autosave', { project: s.project, savedAt: Date.now(), fileName: s.fileName, dirty: s.dirty } satisfies Autosave);
+}
 
 export function startAutosave(): void {
   useApp.subscribe((s, prev) => {
     if (s.project === prev.project || !s.prefs.autoSave || !s.dirty) return;
     if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      void idbPut('meta', 'autosave', { project: getApp().project, savedAt: Date.now(), fileName: getApp().fileName });
-    }, 1500);
+    saveTimer = setTimeout(writeAutosave, 1500);
   });
+  // an edit made in the last moments before the tab is closed or hidden is written straight away
+  const flush = () => {
+    if (saveTimer) writeAutosave();
+  };
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && flush());
+  window.addEventListener('pagehide', flush);
 }
 
-export async function loadAutosave(): Promise<{ project: Project; savedAt: number; fileName: string | null } | null> {
-  const r = await idbGet<{ project: Project; savedAt: number; fileName: string | null }>('meta', 'autosave');
-  return r && r.project?.format === 'pooeffects' ? r : null;
+export async function loadAutosave(): Promise<Autosave | null> {
+  const r = await idbGet<Autosave>('meta', 'autosave');
+  return r && isProject(r.project) ? r : null;
+}
+
+/** Forget the stored session (the recovery screen's way out of a document that cannot be shown). */
+export async function clearAutosave(): Promise<void> {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  await idbPut('meta', 'autosave', null);
 }

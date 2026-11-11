@@ -9,6 +9,8 @@ import { installKeymap } from './shell/keymap';
 import { getApp, useApp } from '../state/store';
 import { hexToRgba } from '../math/color';
 import { installFocusRelease } from './pointer';
+import { ErrorBoundary } from './controls/ErrorBoundary';
+import { AppCrash } from './shell/Recovery';
 
 /** Re-tint the UI from the highlight-color preference (all accent styles derive from these variables). */
 function useHighlightColor(): void {
@@ -50,13 +52,15 @@ export function App() {
   }, []);
   return (
     <div className="app">
-      <TopBar />
-      <Dock />
-      <StatusBar />
-      <DialogsHost />
-      <ContextMenuHost />
-      <Toasts />
-      <DropOverlay />
+      <ErrorBoundary fallback={(error, retry) => <AppCrash error={error} retry={retry} />}>
+        <TopBar />
+        <Dock />
+        <StatusBar />
+        <DialogsHost />
+        <ContextMenuHost />
+        <Toasts />
+        <DropOverlay />
+      </ErrorBoundary>
       <Splash />
     </div>
   );

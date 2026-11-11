@@ -952,3 +952,66 @@ kbd {
   top: 5px;
   color: var(--text-3);
 }
+
+/* ── recovery (a part of the UI failed to render) ─────────────────────────── */
+.crash {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  color: var(--text-2);
+  overflow: auto;
+}
+.crash > svg {
+  color: #ffb454;
+  flex: none;
+}
+.crash-title {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+}
+.crash-msg {
+  max-width: 520px;
+  max-height: 72px;
+  overflow: auto;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bg-0, rgba(0, 0, 0, 0.3));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  word-break: break-word;
+  user-select: text;
+}
+.crash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.crash-hint {
+  max-width: 440px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.crash.full {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  flex: 1;
+  gap: 12px;
+}
+.crash.full .crash-title {
+  font-size: 17px;
+}
+.confirm-text {
+  margin: 4px 0 2px;
+  line-height: 1.55;
+  color: var(--text-2);
+}

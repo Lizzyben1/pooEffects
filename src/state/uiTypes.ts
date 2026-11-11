@@ -105,7 +105,9 @@ export type DialogState =
   | { kind: 'export'; compId: string }
   | { kind: 'welcome' }
   | { kind: 'trackTarget'; compId: string; layerId: string; trackerId: string }
-  | { kind: 'samModel' };
+  | { kind: 'samModel' }
+  /** a question: `onOk` is the primary (Enter) answer, `alt` an optional second answer */
+  | { kind: 'confirm'; title: string; message: string; okLabel?: string; danger?: boolean; onOk: () => void; alt?: { label: string; action: () => void } };
 
 export interface RenderQueueItem {
   id: string;

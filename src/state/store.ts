@@ -14,6 +14,7 @@ import type {
   TimelineState, Toast, ToolId, ViewerState,
 } from './uiTypes';
 import { DEFAULT_WORKSPACE, WORKSPACES } from '../ui/dock/workspaces';
+import { guardListeners } from '../core/guard';
 
 export interface AppState {
   project: Project;
@@ -129,6 +130,7 @@ export const useApp = create<AppState>()(() => ({
   info: {},
   booted: false,
 }));
+guardListeners(useApp, 'store');
 
 export const getApp = () => useApp.getState();
 export const setApp = (partial: Partial<AppState> | ((s: AppState) => Partial<AppState>)) => useApp.setState(partial);

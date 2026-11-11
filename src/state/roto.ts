@@ -20,6 +20,7 @@ import { SAM_MODEL_BASE, SAM_VARIANTS, matteSize, type FromSam, type SamFrameRef
 import { getMatte, matteAtFrame, putMatte } from './mattes';
 import { findLayer, frameTimes, getTracking, isTrackable, setTracking } from './tracking';
 import { alignToPrevious, pointsToBezier, resampleClosed, traceContours, polygonArea, type Pt } from '../cv/mask';
+import { guardListeners } from '../core/guard';
 
 export type ModelState = 'unloaded' | 'loading' | 'ready' | 'error';
 
@@ -40,6 +41,7 @@ export interface RotoState {
 export const useRoto = create<RotoState>()(() => ({
   model: 'unloaded', variant: null, provider: null, files: {}, error: null, busy: false, last: null, overlay: true,
 }));
+guardListeners(useRoto, 'roto');
 const setRoto = (p: Partial<RotoState>) => useRoto.setState(p);
 
 const VARIANT_KEY = 'poo.samVariant';

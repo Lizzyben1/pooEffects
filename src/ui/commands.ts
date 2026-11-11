@@ -104,22 +104,67 @@ export function deleteTarget(compId: string, t: SelTarget): void {
 const SOLID_COLORS = ['#1b1f2a', '#ff9b3f', '#4f9dff', '#3ddc84', '#b48cff', '#ff5d6c'];
 let solidIdx = 0;
 
+/**
+ * Replacing the project cannot be undone. When the open one has changes that were never written to a
+ * file, ask first: Save (then continue), Don't Save (continue) or Cancel.
+ */
+export function guardUnsaved(next: () => void): void {
+  const s = getApp();
+  if (!s.dirty || !Object.keys(s.project.comps).length) {
+    next();
+    return;
+  }
+  openDialog({
+    kind: 'confirm',
+    title: 'Save changes first?',
+    message: `“${s.fileName ?? s.project.name}” has changes that have not been saved to a file. They will be lost if you continue without saving.`,
+    okLabel: 'Save…',
+    onOk: () => {
+      void saveProjectFile().then(() => {
+        // the save can be cancelled from the file picker: only move on once it really happened
+        if (!getApp().dirty) next();
+      });
+    },
+    alt: { label: 'Don’t Save', action: next },
+  });
+}
+
+const FONT_FILE = /\.(ttf|otf|woff2?)$/i;
+
 export async function importFiles(files: File[], addToComp = false): Promise<void> {
+  const project = files.find((f) => /\.pooe$/i.test(f.name));
+  if (project) {
+    guardUnsaved(() => void openProjectFile(project));
+    return;
+  }
   let n = 0;
+  let fonts = 0;
+  const rejected: string[] = [];
   for (const f of files) {
-    if (/\.pooe$/i.test(f.name)) {
-      await openProjectFile(f);
-      return;
-    }
-    const footage = await importFile(f);
-    if (footage) {
-      A.addFootage(footage);
-      n++;
-      const c = comp();
-      if (addToComp && c) A.addLayer(c.id, createFootageLayer(c, footage), { index: 0 });
+    try {
+      const footage = await importFile(f);
+      if (footage) {
+        A.addFootage(footage);
+        n++;
+        const c = comp();
+        if (addToComp && c) A.addLayer(c.id, createFootageLayer(c, footage), { index: 0 });
+      } else if (FONT_FILE.test(f.name)) fonts++;
+      else rejected.push(f.name);
+    } catch (e) {
+      console.warn(`[import] ${f.name}`, e);
+      rejected.push(f.name);
     }
   }
-  if (n) toast(`Imported ${n} item${n > 1 ? 's' : ''}`, 'success');
+  const parts: string[] = [];
+  if (n) parts.push(`${n} item${n > 1 ? 's' : ''}`);
+  if (fonts) parts.push(`${fonts} font${fonts > 1 ? 's' : ''}`);
+  if (parts.length) toast(`Imported ${parts.join(' and ')}`, 'success');
+  if (rejected.length) {
+    toast(
+      `Could not import ${rejected.slice(0, 3).join(', ')}${rejected.length > 3 ? ` and ${rejected.length - 3} more` : ''}: unsupported or damaged file. Images, video, audio, fonts and .pooe projects can be imported.`,
+      'error', 6500,
+    );
+  }
 }
 
 /**
@@ -258,7 +303,11 @@ export function setWorkspace(name: string): void {
   setTimeout(() => window.dispatchEvent(new Event('resize')), 0);
 }
 
-export async function loadDemo(): Promise<void> {
+export function loadDemo(): void {
+  guardUnsaved(() => void openDemo());
+}
+
+async function openDemo(): Promise<void> {
   stopPlayback();
   clearCache();
   const { project, mainCompId, initialTime } = buildDemoProject();
@@ -270,12 +319,34 @@ export async function loadDemo(): Promise<void> {
 }
 
 export function newProject(): void {
-  stopPlayback();
-  clearCache();
-  setActiveFileHandle(null);
-  const p = createProject('Untitled Project');
-  loadProject(p, null);
-  openDialog({ kind: 'newComp' });
+  guardUnsaved(() => {
+    stopPlayback();
+    clearCache();
+    setActiveFileHandle(null);
+    const p = createProject('Untitled Project');
+    loadProject(p, null);
+    openDialog({ kind: 'newComp' });
+  });
+}
+
+async function pickAndOpenProject(): Promise<void> {
+  if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
+    try {
+      const [handle] = await (window as unknown as { showOpenFilePicker: (opts: object) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker({
+        types: [{ description: 'pooEffects Project', accept: { 'application/zip': ['.pooe'] } }],
+        multiple: false,
+      });
+      if (handle) {
+        const file = await handle.getFile();
+        await openProjectFile(file, handle);
+        return;
+      }
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
+    }
+  }
+  const files = await pickFiles('.pooe,application/zip', false);
+  if (files[0]) await openProjectFile(files[0]);
 }
 
 export async function saveFramePng(): Promise<void> {
@@ -329,31 +400,13 @@ export function addToRenderQueue(compId?: string): void {
 export const commands = {
   // file
   newProject,
-  openProject: async () => {
-    if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
-      try {
-        const [handle] = await (window as unknown as { showOpenFilePicker: (opts: object) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker({
-          types: [{ description: 'pooEffects Project', accept: { 'application/zip': ['.pooe'] } }],
-          multiple: false,
-        });
-        if (handle) {
-          const file = await handle.getFile();
-          await openProjectFile(file, handle);
-          return;
-        }
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') return;
-      }
-    }
-    const files = await pickFiles('.pooe,application/zip', false);
-    if (files[0]) await openProjectFile(files[0]);
-  },
+  openProject: () => guardUnsaved(() => void pickAndOpenProject()),
   save: () => void saveProjectFile(),
   importFile: async () => {
     const files = await pickFiles('image/*,video/*,audio/*,.ttf,.otf,.woff,.woff2,.pooe');
     await importFiles(files);
   },
-  loadDemo: () => void loadDemo(),
+  loadDemo,
   saveFrame: () => void saveFramePng(),
   addToRenderQueue: () => addToRenderQueue(),
   // edit

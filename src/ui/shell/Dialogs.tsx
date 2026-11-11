@@ -70,7 +70,31 @@ function DialogSwitch({ d }: { d: DialogState }) {
       return <TrackTargetDialog compId={d.compId} layerId={d.layerId} trackerId={d.trackerId} />;
     case 'samModel':
       return <SamModelDialog />;
+    case 'confirm':
+      return <ConfirmDialog d={d} />;
   }
+}
+
+function ConfirmDialog({ d }: { d: Extract<DialogState, { kind: 'confirm' }> }) {
+  const answer = (fn: () => void) => () => {
+    closeDialog();
+    fn();
+  };
+  return (
+    <Dialog
+      title={d.title}
+      onClose={closeDialog}
+      width={460}
+      footer={<>
+        {d.alt && <button className="btn" onClick={answer(d.alt.action)}>{d.alt.label}</button>}
+        <div style={{ flex: 1 }} />
+        <button className="btn ghost" onClick={closeDialog}>Cancel</button>
+        <button className={`btn primary${d.danger ? ' danger' : ''}`} onClick={answer(d.onOk)}>{d.okLabel ?? 'OK'}</button>
+      </>}
+    >
+      <p className="confirm-text">{d.message}</p>
+    </Dialog>
+  );
 }
 
 // ── shared bits ─────────────────────────────────────────────────────────────

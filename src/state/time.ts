@@ -4,6 +4,7 @@
 import { createStore } from 'zustand/vanilla';
 import { useStore } from 'zustand';
 import { useEffect, useState } from 'react';
+import { guardListeners } from '../core/guard';
 
 export interface TimeState {
   times: Record<string, number>;
@@ -25,6 +26,7 @@ export const timeStore = createStore<TimeState>(() => ({
   playFps: 0,
   realtime: false,
 }));
+guardListeners(timeStore, 'time');
 
 export function getTime(compId: string | null | undefined): number {
   if (!compId) return 0;

@@ -14,7 +14,7 @@ import { loadDocumentFonts } from './fonts';
 import { startEngine } from './state/engine';
 import { loadAutosave, startAutosave } from './state/projectIO';
 import { restoreFonts, restoreMedia } from './state/media';
-import { getApp, loadProject, openDialog, setApp } from './state/store';
+import { getApp, loadProject, openDialog, setApp, toast } from './state/store';
 import { openComp } from './state/actions';
 import { setTime } from './state/time';
 import { buildDemoProject, ensureProceduralMedia } from './demo';
@@ -36,15 +36,24 @@ async function boot(): Promise<void> {
 
   setBoot('Restoring your last session…', 0.4);
   const saved = await loadAutosave().catch(() => null);
+  let restored = false;
   if (saved && Object.keys(saved.project.comps).length) {
-    loadProject(saved.project, saved.fileName);
-    const first = getApp().activeCompId;
-    if (first) openComp(first);
-    setBoot('Re-linking media…', 0.6);
-    await restoreMedia(Object.values(saved.project.footage));
-    await ensureProceduralMedia(saved.project);
-    await restoreMattes(saved.project);
-  } else {
+    try {
+      loadProject(saved.project, saved.fileName);
+      // a restored session still has whatever was never written to a file
+      setApp({ dirty: saved.dirty ?? true });
+      const first = getApp().activeCompId;
+      if (first) openComp(first);
+      setBoot('Re-linking media…', 0.6);
+      await restoreMedia(Object.values(saved.project.footage));
+      await ensureProceduralMedia(saved.project);
+      await restoreMattes(saved.project);
+      restored = true;
+    } catch (e) {
+      console.error('[boot] the last session could not be restored', e);
+    }
+  }
+  if (!restored) {
     setBoot('Building the demo scene…', 0.55);
     const { project, mainCompId, initialTime } = buildDemoProject();
     loadProject(project, null);
@@ -68,4 +77,9 @@ async function boot(): Promise<void> {
   if (!welcomed) setTimeout(() => !getApp().dialog && openDialog({ kind: 'welcome' }), getApp().prefs.showSplash ? 1300 : 400);
 }
 
-void boot();
+void boot().catch((e) => {
+  // never leave the splash up: the app is usable even if part of start-up failed
+  console.error('[boot] start-up failed', e);
+  setApp({ booted: true });
+  toast('Part of start-up failed — some media may be offline. See the console for details.', 'error', 7000);
+});

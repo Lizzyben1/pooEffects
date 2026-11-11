@@ -8,7 +8,7 @@ import { applyPatches, diffTree } from '../src/core/sync';
 import { createComp, createProject, createSolidLayer } from '../src/core/factory';
 import type { AnimProp, BezierPath, Composition, Keyframe, Layer, Project } from '../src/core/types';
 import { effectiveEase, keyframedValue, segmentSpeed } from '../src/anim/interpolate';
-import { getApp, keyOf, loadProject, setApp, setPrefs, undo } from '../src/state/store';
+import { getApp, keyOf, loadProject, setApp, setPrefs, undo, useApp } from '../src/state/store';
 import * as A from '../src/state/actions';
 import * as cache from '../src/state/cache';
 import { setTime } from '../src/state/time';
@@ -298,4 +298,54 @@ test('cache: LRU eviction, pinned frames survive, background caching stops when 
   assert.ok(!closed.has(stale.id));
   cache.clearAll();
   await new Promise((r) => setTimeout(r, 80));
+});
+
+test('project panel: folders cannot be nested into themselves; names cannot be emptied', () => {
+  const { compId } = open();
+  const a = A.newFolder('A');
+  const b = A.newFolder('B', a);
+  const c = A.newFolder('C', b);
+  A.moveToFolder([a], c); // into its own grandchild
+  A.moveToFolder([a], a); // into itself
+  A.moveToFolder([b], 'missing'); // into a folder that does not exist
+  let f = getApp().project.folders;
+  assert.equal(f[a].folderId, null);
+  assert.equal(f[b].folderId, a);
+  A.moveToFolder([c, compId], null);
+  A.moveToFolder([a], c); // now legal: C is no longer inside A
+  f = getApp().project.folders;
+  assert.equal(f[a].folderId, c);
+  assert.equal(f[c].folderId, null);
+  // every folder still reaches the root
+  for (const id of Object.keys(f)) {
+    let cur: string | null = id;
+    for (let n = 0; cur && n < 10; n++) cur = f[cur].folderId;
+    assert.equal(cur, null);
+  }
+  const name = getApp().project.comps[compId].name;
+  A.renameItem(compId, '   ');
+  assert.equal(getApp().project.comps[compId].name, name);
+  A.renameItem(compId, '  Shot 1 ');
+  assert.equal(getApp().project.comps[compId].name, 'Shot 1');
+});
+
+test('a store listener that throws does not stop the listeners after it', () => {
+  open();
+  const seen: string[] = [];
+  const err = console.error;
+  const logged: unknown[] = [];
+  console.error = (...a: unknown[]) => void logged.push(a);
+  const off1 = useApp.subscribe(() => {
+    throw new Error('boom');
+  });
+  const off2 = useApp.subscribe((s) => void seen.push(s.project.name));
+  try {
+    assert.doesNotThrow(() => A.renameItem(Object.keys(getApp().project.comps)[0], 'After'));
+  } finally {
+    console.error = err;
+    off1();
+    off2();
+  }
+  assert.equal(seen.length, 1);
+  assert.equal(logged.length, 1);
 });
