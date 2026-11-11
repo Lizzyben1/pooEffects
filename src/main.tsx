@@ -44,13 +44,20 @@ async function boot(): Promise<void> {
       setApp({ dirty: saved.dirty ?? true });
       const first = getApp().activeCompId;
       if (first) openComp(first);
-      setBoot('Re-linking media…', 0.6);
-      await restoreMedia(Object.values(saved.project.footage));
-      await ensureProceduralMedia(saved.project);
-      await restoreMattes(saved.project);
       restored = true;
     } catch (e) {
       console.error('[boot] the last session could not be restored', e);
+    }
+    if (restored) {
+      // Media is secondary: whatever cannot be re-linked stays offline, the project itself is kept.
+      // (Falling back to the demo here would let the next auto-save overwrite the user's session.)
+      setBoot('Re-linking media…', 0.6);
+      const steps: [string, () => Promise<unknown>][] = [
+        ['media', () => restoreMedia(Object.values(saved.project.footage))],
+        ['procedural media', () => ensureProceduralMedia(saved.project)],
+        ['roto mattes', () => restoreMattes(saved.project)],
+      ];
+      for (const [what, run] of steps) await run().catch((e) => console.warn(`[boot] could not restore ${what}`, e));
     }
   }
   if (!restored) {

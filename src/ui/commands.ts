@@ -330,6 +330,13 @@ export function newProject(): void {
 }
 
 async function pickAndOpenProject(): Promise<void> {
+  // A file picker may only open during a click or key press. After "Save…" in the unsaved-changes prompt that
+  // moment has passed (the save dialog used it up), so say what to do instead of silently doing nothing.
+  const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  if (activation && !activation.isActive) {
+    toast('Saved. Choose File ▸ Open Project again to pick the project to open.', 'info', 5000);
+    return;
+  }
   if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
     try {
       const [handle] = await (window as unknown as { showOpenFilePicker: (opts: object) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker({
