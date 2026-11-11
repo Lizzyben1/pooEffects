@@ -531,15 +531,42 @@ export function cutSelection(): void {
   else if (s.selLayers.length && s.activeCompId) deleteLayers(s.activeCompId, s.selLayers);
 }
 
+/** Does `comp` (directly or through nested precomps) contain the composition `targetId`? */
+export function compUses(project: Project, comp: Composition, targetId: string, depth = 0): boolean {
+  if (depth > 32) return true;
+  for (const l of comp.layers) {
+    const id = l.source?.compId;
+    if (!id) continue;
+    if (id === targetId) return true;
+    const n = project.comps[id];
+    if (n && compUses(project, n, targetId, depth + 1)) return true;
+  }
+  return false;
+}
+
 export function paste(): void {
   const s = getApp();
   const comp = activeComp();
   if (!comp || !clipboard) return;
   const t = getTime(comp.id);
   if (clipboard.kind === 'layers') {
-    const layers = clipboard.layers.map((l) => regenIds(clone(l)));
+    // The clipboard outlives undo, deletions and even the project it was copied from. Only layers whose
+    // footage / nested comp still exists can be pasted, and never a comp into itself.
+    const p = s.project;
+    const usable = clipboard.layers.filter((l) => {
+      if (l.source?.footageId && !p.footage[l.source.footageId]) return false;
+      if (l.source?.compId) {
+        const n = p.comps[l.source.compId];
+        if (!n || n.id === comp.id || compUses(p, n, comp.id)) return false;
+      }
+      return true;
+    });
+    const skipped = clipboard.layers.length - usable.length;
+    if (skipped) toast(`${skipped} layer${skipped > 1 ? 's were' : ' was'} not pasted: the source is missing from this project or would nest the comp inside itself`, 'warn', 5000);
+    if (!usable.length) return;
+    const layers = usable.map((l) => regenIds(clone(l)));
     const idMap = new Map<string, string>();
-    clipboard.layers.forEach((l, i) => idMap.set(l.id, layers[i].id));
+    usable.forEach((l, i) => idMap.set(l.id, layers[i].id));
     for (const l of layers) {
       if (l.parentId) l.parentId = idMap.get(l.parentId) ?? (comp.layers.some((x) => x.id === l.parentId) ? l.parentId : null);
       if (l.trackMatte) {
@@ -923,7 +950,9 @@ export function setTimeRemap(compId: string, id: string, on: boolean): void {
     if (on) {
       const fd = frameDuration(comp.frameRate);
       const a = toLayerTime(layer, layer.inPoint), b = toLayerTime(layer, layer.outPoint - fd);
-      l.timeRemap = { value: a, keyframes: [makeKeyframe(toLayerTime(layer, layer.inPoint), a, false), makeKeyframe(toLayerTime(layer, layer.outPoint - fd), b, false)] } as never;
+      // a reversed layer runs its layer time backwards: keyframes are always stored in ascending time
+      const keys = [makeKeyframe(a, a, false), makeKeyframe(b, b, false)].sort((x, y) => x.t - y.t);
+      l.timeRemap = { value: keys[0].v as number, keyframes: keys } as never;
     } else l.timeRemap = { value: 0, keyframes: [] } as never;
   });
 }
@@ -1055,7 +1084,11 @@ export function updateComp(compId: string, fields: Partial<Composition>): void {
     const oldDur = c.duration;
     Object.assign(c, clone(fields));
     if (fields.duration !== undefined && fields.duration !== oldDur) {
-      c.workArea = [Math.min(c.workArea[0], c.duration), Math.min(c.workArea[1] >= oldDur - 1e-6 ? c.duration : c.workArea[1], c.duration)];
+      // keep at least one frame of work area inside the new duration
+      const fd = frameDuration(c.frameRate);
+      const end = Math.min(c.workArea[1] >= oldDur - 1e-6 ? c.duration : c.workArea[1], c.duration);
+      const start = Math.max(0, Math.min(c.workArea[0], c.duration - fd));
+      c.workArea = [start, Math.min(c.duration, Math.max(end, start + fd))];
       for (const l of c.layers) {
         if (l.outPoint >= oldDur - 1e-6 && (l.type === 'solid' || l.type === 'shape' || l.type === 'text' || l.type === 'null' || l.type === 'camera' || l.type === 'light' || l.type === 'image')) l.outPoint = c.duration;
       }
@@ -1151,10 +1184,13 @@ export function precompose(compId: string, ids: string[], name: string, moveAll 
     const blank = createPrecompLayer(nested, nested);
     const inner = regenIds(clone(src));
     Object.assign(inner, {
-      transform: clone(blank.transform), masks: [], effects: [], markers: [], parentId: null, trackMatte: null, trackers: undefined, cameraTrack: undefined,
+      transform: clone(blank.transform), masks: [], effects: [], markers: [], parentId: null, trackMatte: null,
       startTime: 0, stretch: 100, inPoint: lo, outPoint: hi, enabled: true, solo: false, locked: false, shy: false, threeD: false, motionBlur: false,
       adjustment: false, collapse: false, guide: false, autoOrient: 'off', blendMode: 'normal', preserveTransparency: false, effectsEnabled: true,
     } satisfies Partial<Layer>);
+    // tracking data describes the layer as placed in this comp: it stays on the outer layer
+    delete inner.trackers;
+    delete inner.cameraTrack;
     nested.layers = [inner];
     const outer = clone(src);
     outer.type = 'precomp';
@@ -1217,19 +1253,32 @@ export function deleteProjectItems(ids: string[]): void {
       for (const f of Object.values(d.folders)) if (f.folderId === id) f.folderId = null;
     }
     for (const c of Object.values(d.comps)) {
+      const n = c.layers.length;
       c.layers = c.layers.filter((l) => !(l.source?.compId && compIds.includes(l.source.compId)) && !(l.source?.footageId && footIds.includes(l.source.footageId)));
+      if (c.layers.length === n) continue;
+      // layers that used the deleted items are gone: nothing may keep pointing at them
+      const left = new Set(c.layers.map((l) => l.id));
+      for (const l of c.layers) {
+        if (l.parentId && !left.has(l.parentId)) l.parentId = null;
+        if (l.trackMatte && !left.has(l.trackMatte.layerId)) l.trackMatte = null;
+      }
     }
   });
   setApp((s) => {
+    const p2 = getApp().project;
     const nextOpen = s.openComps.filter((c) => !compIds.includes(c));
-    let nextActive = s.activeCompId && compIds.includes(s.activeCompId) ? (nextOpen[0] ?? Object.keys(getApp().project.comps)[0] ?? null) : s.activeCompId;
-    if (nextActive && !nextOpen.includes(nextActive)) {
-      nextOpen.push(nextActive);
-    }
+    const nextActive = s.activeCompId && compIds.includes(s.activeCompId) ? (nextOpen[0] ?? Object.keys(p2.comps)[0] ?? null) : s.activeCompId;
+    if (nextActive && !nextOpen.includes(nextActive)) nextOpen.push(nextActive);
+    // the selection only ever refers to layers of the active comp that still exist
+    const alive = new Set(nextActive === s.activeCompId ? p2.comps[nextActive ?? '']?.layers.map((l) => l.id) ?? [] : []);
     return {
       selItems: [],
       openComps: nextOpen,
       activeCompId: nextActive,
+      selLayers: s.selLayers.filter((id) => alive.has(id)),
+      selKeys: s.selKeys.filter((k) => alive.has(k.split('|')[0])),
+      selProps: s.selProps.filter((k) => alive.has(k.split('|')[0])),
+      selTarget: null,
     };
   });
 }

@@ -19,7 +19,7 @@ import { WORKSPACES } from './dock/workspaces';
 import { ensurePanel } from './dock/layout';
 import { deleteTracker, getTracking, stopTracking } from '../state/tracking';
 import type { PanelId, SelTarget } from '../state/uiTypes';
-import type { Composition, LightKind, Project, TextAnimatorPropKey } from '../core/types';
+import type { Composition, LightKind, TextAnimatorPropKey } from '../core/types';
 import { host, renderOptions, getViewParams } from '../state/engine';
 import { FrameEval, layerSourceSize } from '../core/evaluate';
 import { layerBounds } from './viewer/geometry';
@@ -122,19 +122,6 @@ export async function importFiles(files: File[], addToComp = false): Promise<voi
   if (n) toast(`Imported ${n} item${n > 1 ? 's' : ''}`, 'success');
 }
 
-/** Does `comp` (directly or through nested precomps) contain the composition `targetId`? */
-function compUses(project: Project, comp: Composition, targetId: string, depth = 0): boolean {
-  if (depth > 32) return true;
-  for (const l of comp.layers) {
-    const id = l.source?.compId;
-    if (!id) continue;
-    if (id === targetId) return true;
-    const n = project.comps[id];
-    if (n && compUses(project, n, targetId, depth + 1)) return true;
-  }
-  return false;
-}
-
 /**
  * Add a project item (footage or composition) to the active comp as a new layer at `index`.
  * Used by double-click, the Project context menu and drag-and-drop onto the viewer / timeline.
@@ -157,7 +144,7 @@ export function addProjectItemToComp(id: string, index = 0): string | null {
   }
   const nested = s.project.comps[id];
   if (!nested) return null;
-  if (nested.id === c.id || compUses(s.project, nested, c.id)) {
+  if (nested.id === c.id || A.compUses(s.project, nested, c.id)) {
     toast(`“${nested.name}” contains this composition — nesting it here would loop forever`, 'warn', 4000);
     return null;
   }
