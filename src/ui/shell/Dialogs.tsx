@@ -1,7 +1,7 @@
 // Modal dialogs: composition / solid / footage settings, pre-compose, time stretch, keyframe
 // velocity, preferences, keyboard shortcuts, quick export, about and the welcome screen.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Clapperboard, Film, FilePlus2, FolderOpen, Gauge, Info, Keyboard, Layers, Link, Palette, Play, Search, Settings2, Sparkles, Square,
   Timer, Unlink, Upload, Download, Check, X, Cpu, ListVideo,
@@ -88,22 +88,27 @@ function Row({ label, children, hint }: { label: ReactNode; children: ReactNode;
 }
 
 function Num({ value, onChange, min, max, step = 1, width = 90, suffix }: { value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number; width?: number; suffix?: string }) {
+  // The text being typed is held locally while the field has focus, so it can be emptied or hold a
+  // half-typed number; a controlled value would snap back the moment the text stopped being a number.
+  const [text, setText] = useState<string | null>(null);
   return (
     <span className="num-field" style={{ width }}>
       <input
         className="input"
         type="number"
-        value={Number.isFinite(value) ? value : ''}
+        value={text ?? (Number.isFinite(value) ? String(value) : '')}
         min={min}
         max={max}
         step={step}
         onChange={(e) => {
+          setText(e.target.value);
           const v = parseFloat(e.target.value);
           if (Number.isFinite(v)) onChange(v);
         }}
         onBlur={(e) => {
           const v = parseFloat(e.target.value);
           if (Number.isFinite(v)) onChange(Math.max(min ?? -Infinity, Math.min(max ?? Infinity, v)));
+          setText(null);
         }}
       />
       {suffix && <em>{suffix}</em>}
@@ -174,12 +179,15 @@ function CompDialog({ compId }: { compId?: string }) {
   const [bitDepth, setBitDepth] = useState<Composition['bitDepth']>(existing?.bitDepth ?? 8);
   const duration = parseTimeInput(durText, fps, dropFrame, existing?.duration ?? 10);
   const valid = !!name.trim() && w >= 4 && h >= 4 && w <= 8192 && h <= 8192 && fps > 0 && duration !== null && duration > 0;
+  // The locked ratio is remembered rather than re-derived from the two fields: while a number is being
+  // typed the fields pass through values like "1" and "19", which would collapse the ratio to 1:1.
+  const aspect = useRef(w / Math.max(1, h));
   const setWidth = (v: number) => {
-    if (lock && w > 0) setH(Math.max(1, Math.round((v * h) / w)));
+    if (lock) setH(Math.max(1, Math.round(v / aspect.current)));
     setW(Math.round(v));
   };
   const setHeight = (v: number) => {
-    if (lock && h > 0) setW(Math.max(1, Math.round((v * w) / h)));
+    if (lock) setW(Math.max(1, Math.round(v * aspect.current)));
     setH(Math.round(v));
   };
   const submit = () => {
@@ -221,6 +229,7 @@ function CompDialog({ compId }: { compId?: string }) {
                 key={p.name}
                 className={`preset-card${active ? ' active' : ''}`}
                 onClick={() => {
+                  aspect.current = p.w / p.h;
                   setW(p.w);
                   setH(p.h);
                   setFps(p.fps);
@@ -241,7 +250,10 @@ function CompDialog({ compId }: { compId?: string }) {
           </Row>
           <Row label="Size" hint={`${ratio}`}>
             <Num value={w} onChange={setWidth} min={4} max={8192} suffix="px" />
-            <button className={`icon-btn${lock ? ' active' : ''}`} title="Lock aspect ratio" onClick={() => setLock(!lock)}>{lock ? <Link size={13} /> : <Unlink size={13} />}</button>
+            <button className={`icon-btn${lock ? ' active' : ''}`} title="Lock aspect ratio" onClick={() => {
+              if (!lock && w > 0 && h > 0) aspect.current = w / h;
+              setLock(!lock);
+            }}>{lock ? <Link size={13} /> : <Unlink size={13} />}</button>
             <Num value={h} onChange={setHeight} min={4} max={8192} suffix="px" />
           </Row>
           <Row label="Frame Rate">

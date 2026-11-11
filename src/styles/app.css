@@ -770,6 +770,9 @@ select.input {
     opacity: 0;
   }
 }
+.dialog:focus {
+  outline: none;
+}
 .dialog {
   min-width: 420px;
   max-width: min(92vw, 860px);

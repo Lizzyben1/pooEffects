@@ -325,7 +325,8 @@ export function installKeymap(): () => void {
   const onKey = (e: KeyboardEvent) => {
     if (e.defaultPrevented || isTyping(e.target)) return;
     const s = getApp();
-    if (s.dialog || s.contextMenu) return;
+    // a dialog or an open menu owns the keyboard
+    if (s.dialog || s.contextMenu || document.querySelector('.popover .menu')) return;
     if (e.code === 'Space' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       if (!e.repeat) {

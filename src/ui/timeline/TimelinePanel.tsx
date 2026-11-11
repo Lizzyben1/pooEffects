@@ -269,9 +269,13 @@ function Timeline({ comp }: { comp: Composition }) {
       return;
     }
     // empty area: marquee keyframe selection
-    const row = rowAtY(y);
-    if (!e.shiftKey) setApp({ selKeys: [] });
-    if (row && row.kind === 'layer' && !e.shiftKey) A.selectLayers([row.layer.id]);
+    // the empty track of a layer row selects that layer; space below the last row selects nothing
+    const row = y < totalH ? rowAtY(y) : undefined;
+    if (!e.shiftKey) {
+      if (getApp().selKeys.length) setApp({ selKeys: [] });
+      if (row?.kind === 'layer') A.selectLayers([row.layer.id]);
+      else if (!row) A.deselectAll();
+    }
     const x0 = x, y0 = y;
     const base = e.shiftKey ? getApp().selKeys : [];
     setMarquee({ x0, y0, x1: x0, y1: y0 });

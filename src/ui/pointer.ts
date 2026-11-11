@@ -82,15 +82,18 @@ export function installFocusRelease(): () => void {
   const release = (el: Element | null) => {
     if (el instanceof HTMLElement && el === document.activeElement) el.blur();
   };
+  // Dialogs and popovers are modal keyboard contexts of their own (shortcuts are off while they are
+  // open, and Enter / Tab rely on focus staying inside): leave focus alone there.
+  const modal = (el: Element | null) => !!el?.closest('.dialog, .popover');
   const onChange = (e: Event) => {
     const t = e.target as HTMLElement | null;
-    if (t?.tagName === 'SELECT') release(t);
+    if (t?.tagName === 'SELECT' && !modal(t)) release(t);
   };
   const onClick = (e: MouseEvent) => {
     // detail is 0 for keyboard-initiated clicks: leave focus alone for keyboard users
     if (e.detail === 0) return;
     const a = document.activeElement as HTMLElement | null;
-    if (!a) return;
+    if (!a || modal(a)) return;
     const tag = a.tagName;
     if (tag === 'BUTTON' || (tag === 'INPUT' && ['range', 'checkbox', 'radio', 'button'].includes((a as HTMLInputElement).type))) release(a);
   };

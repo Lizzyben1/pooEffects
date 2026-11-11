@@ -398,7 +398,10 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     const th = tool === 'select' ? hitTrack(v, app, getTracking(), sx, sy) : null;
     if (th) return trackDrag(e, th, v, sx, sy);
     if (tool === 'select' && trackPointMode(app)) return trackPointMarquee(e, sx, sy);
-    const handle = hitHandle(v, app, sx, sy, ov.current.selectedVertex);
+    let handle = hitHandle(v, app, sx, sy, ov.current.selectedVertex);
+    // The anchor point belongs to the Pan Behind tool (Y). With the Selection tool, grabbing a layer by
+    // its middle must move the layer — not quietly slide its anchor point out from under it.
+    if (handle?.kind === 'anchor' && tool !== 'panBehind') handle = null;
     if (handle && tool !== 'rotate') return handleDrag(e, handle, v, sx, sy);
     if (tool === 'panBehind') {
       const layer = app.selLayers.length ? v.comp.layers.find((l) => l.id === app.selLayers[0]) : hitLayer(v, sx, sy);
@@ -1221,7 +1224,8 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       wrap.current!.style.cursor = 'crosshair';
       return;
     }
-    const h = tool === 'select' || tool === 'panBehind' ? hitHandle(v, app, sx, sy, ov.current.selectedVertex) : null;
+    let h = tool === 'select' || tool === 'panBehind' ? hitHandle(v, app, sx, sy, ov.current.selectedVertex) : null;
+    if (h?.kind === 'anchor' && tool !== 'panBehind') h = null;
     const prev = ov.current.hover;
     if (JSON.stringify(prev) !== JSON.stringify(h)) {
       ov.current.hover = h;

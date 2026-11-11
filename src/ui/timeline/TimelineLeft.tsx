@@ -12,6 +12,7 @@ import type { Row } from './rows';
 import type { SelTarget } from '../../state/uiTypes';
 import { PropEditor } from '../controls/PropEditor';
 import { LazySelect } from '../controls/LazySelect';
+import { Scrub } from '../controls/Scrub';
 import {
   AdjustmentIcon, CollapseIcon, CubeIcon, FxIcon, LayerTypeIcon, MotionBlurIcon, PickWhipIcon, QualityIcon, ShyIcon, SoloIcon, StopwatchIcon,
 } from '../icons';
@@ -348,13 +349,13 @@ export function FieldLeft({ row, comp }: { row: Extract<Row, { kind: 'field' }>;
           </span>
         )}
         {c.type === 'number' && (
-          <input
-            className="mini-num mono"
-            type="number"
-            defaultValue={Number(value)}
-            step={c.step}
-            onKeyDown={(e) => e.stopPropagation()}
-            onChange={(e) => A.setLayerPath(comp.id, row.layer.id, c.path, Number(e.target.value))}
+          <Scrub
+            value={Number(value) || 0}
+            step={c.step ?? 1}
+            min={c.min}
+            max={c.max}
+            precision={(c.step ?? 1) >= 1 ? 0 : 2}
+            onChange={(v) => A.setLayerPath(comp.id, row.layer.id, c.path, (c.step ?? 1) >= 1 ? Math.round(v) : v)}
           />
         )}
       </span>

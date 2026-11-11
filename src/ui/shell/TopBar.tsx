@@ -43,8 +43,15 @@ function MenuBar() {
     if (open) closedAt.current = { idx: open.idx, t: performance.now() };
     setOpen(null);
   };
+  const nav = useRef<HTMLElement>(null);
+  const side = (dir: -1 | 1) => {
+    if (!open) return;
+    const idx = (open.idx + dir + MENUS.length) % MENUS.length;
+    const btn = nav.current?.querySelectorAll<HTMLElement>('.menu-btn')[idx];
+    if (btn) setOpen({ idx, rect: btn.getBoundingClientRect() });
+  };
   return (
-    <nav className="menus">
+    <nav className="menus" ref={nav}>
       {MENUS.map((m, i) => (
         <button
           key={m.label}
@@ -64,7 +71,7 @@ function MenuBar() {
       ))}
       {open && (
         <Popover key={open.idx} x={open.rect.left} y={open.rect.bottom + 4} onClose={close} anchorRect={open.rect}>
-          <MenuList items={MENUS[open.idx].items()} onClose={() => setOpen(null)} />
+          <MenuList items={MENUS[open.idx].items()} onClose={() => setOpen(null)} onSide={side} />
         </Popover>
       )}
     </nav>
