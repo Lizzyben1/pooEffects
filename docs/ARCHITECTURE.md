@@ -435,6 +435,19 @@ with `null`, never reject, so callers simply skip a frame.
   transaction suspends caching, so a drag that never ended used to leave the app unable to cache. Wheel handlers that
   zoom are attached natively as non-passive listeners (`useWheel`) because React's `onWheel` cannot `preventDefault`.
   `installFocusRelease` blurs dropdowns, buttons and sliders after pointer use so they do not swallow shortcuts.
+  A press outside a focused text field blurs it from a capture-phase listener, because the viewer and timeline cancel
+  the press for pans and drags, which stops the browser from moving focus by itself.
+- **Dialogs and menus own the keyboard** (`ui/controls/Dialog.tsx`, `Menu.tsx`). A dialog takes focus when it opens,
+  pulls it back if a focused field unmounts, and confirms on Enter with its primary button; Escape closes a popover
+  opened from the dialog before the dialog. The deepest open menu level handles arrows / Home / End / Enter, and the
+  global keymap stands down while a dialog or menu is open.
+- **Failure containment.**
+  - `ErrorBoundary` wraps each panel body and the app shell (`ui/shell/Recovery.tsx` draws the fallbacks). A panel
+    that throws while rendering is replaced by a recovery card and retries when the document changes, so Undo is the
+    remedy; the shell-level screen also offers Save Project and Start Fresh (which forgets the stored session).
+  - `guardListeners` (`core/guard.ts`) wraps every listener registered with `store.subscribe`. zustand notifies in a
+    plain loop, so one listener that throws would otherwise leave every later one — React's included — un-notified
+    and the UI stale.
 - **Graph editor** (`ui/timeline/GraphEditor.tsx`). Handles are positioned from `effectiveEase()` — the ease a keyframe
   side really uses whatever its type — and the speed curve from `segmentSpeed()`, the exact slope of the segment's
   temporal Bézier. The value range auto-fits but is frozen for the length of a gesture, which is what keeps a drag
@@ -451,8 +464,15 @@ with `null`, never reject, so callers simply skip a frame.
 
 ## 12. Persistence
 
-- **Auto-save.** The project auto-saves to IndexedDB 1.5 s after the last change. Media blobs are stored on import, so
-  reloading restores the session and its footage.
+- **Auto-save.** The project auto-saves to IndexedDB 1.5 s after the last change, and immediately when the tab is
+  hidden or closed (`visibilitychange` / `pagehide`). Media blobs are stored on import, so reloading restores the
+  session and its footage. The record carries a `dirty` flag: a restored session still knows it has changes that were
+  never written to a file.
+- **Replacing the project** (`guardUnsaved` in `ui/commands.ts`) goes through a Save / Don't Save / Cancel prompt
+  whenever `dirty` is set.
+- **Untrusted input.** A project from a file or from IndexedDB is shape-checked before it is loaded (`isProject`).
+  Media inside a `.pooe` and media restored at start-up are registered one by one, so a blob that no longer decodes
+  costs that footage item, not the project or the boot.
 - **`.pooe` files** are ZIP archives of `project.json` plus `media/<footageId>` blobs and `mattes/<matteId>/<rev>`
   roto matte revisions (deflated 8-bit alpha).
 - **Roto mattes** live outside the document in an immutable revision store (`state/mattes.ts`), mirrored to IndexedDB and
@@ -474,7 +494,14 @@ with `null`, never reject, so callers simply skip a frame.
   - dragging a keyframe past another keeps both, dropping onto one replaces it;
   - path vertex insertion preserves the shape; removal and corner/smooth conversion;
   - pre-compose "leave all attributes";
-  - cache LRU order, pinning, refusal of stale frames and the background-caching stop condition.
+  - cache LRU order, pinning, refusal of stale frames and the background-caching stop condition;
+  - Project panel folders can never form a cycle; names cannot be emptied;
+  - a store listener that throws does not stop the listeners after it.
+- **Randomised editing** (`tests/fuzz.test.ts`): seeded sessions of several hundred random edits, undos and redos
+  (`FUZZ_SEEDS=n` sets how many; the clock is faked so undo coalescing is deterministic). After every step the document
+  must satisfy the structural invariants (unique ids, no dangling parents, mattes or nested comps, sorted keyframes, a
+  valid work area, a live selection), every comp must still evaluate, and a shadow copy kept in sync through
+  `diffTree` / `applyPatches` must equal the document — the same path the render worker takes.
 
 - **Interpolation** (`tests/interpolate.test.ts`):
   - linear, hold and easy-ease segments, and clamping outside the keyed range;

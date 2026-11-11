@@ -109,7 +109,9 @@ Opus, then MP3. Builds without proprietary codecs, such as Chromium, therefore p
   - cameras;
   - lights: point, spot, parallel and ambient.
 - **Parenting with a pick whip.** Parenting compensates so the layer doesn't jump.
-- **3D layers** with orientation plus X, Y and Z rotation.
+- **3D layers** with orientation plus X, Y and Z rotation. A layer becomes 3D with the cube switch in the timeline's
+  Switches column, *Layer ▸ Switches ▸ 3D Layer*, or the same entry in the layer's context menu. Cameras and lights only
+  affect 3D layers — adding one to a comp without any says so. *View ▸ 3D View* picks the orthographic and custom views.
 - **Cameras:**
   - one-node and two-node, with the AE zoom model;
   - depth of field driven by focus distance, aperture and blur level;
@@ -178,6 +180,15 @@ their stack to everything below, limited to their own masked footprint.
   - Flowchart: a node graph of precomps and footage.
 - **Every command has one implementation**, reached the same way from the menu bar, the context menus, the toolbar and
   the keyboard. Menu items that cannot apply are greyed out, and a command that needs a selection says so.
+- **Timeline columns:** the layer switches and the Mode / Track Matte columns are shown side by side. On a narrow
+  timeline <kbd>F4</kbd> (or the column header) cycles between both, switches only and modes only.
+- **Keyboard everywhere:**
+  - menus open from the menu bar or a right-click are navigable with the arrow keys, <kbd>Home</kbd> / <kbd>End</kbd>,
+    <kbd>Enter</kbd> and <kbd>Esc</kbd>; <kbd>←</kbd> <kbd>→</kbd> move between menu-bar menus;
+  - in dialogs <kbd>Enter</kbd> confirms, <kbd>Esc</kbd> cancels and <kbd>Tab</kbd> stays inside the dialog;
+  - <kbd>Enter</kbd> renames the selected layer;
+  - shortcuts never go to a control you only clicked: dropdowns, buttons and sliders give the keyboard back, and so
+    does a text field as soon as you press anywhere else.
 - **Context menus** on layers, keyframes, property rows, effects, masks, shape items, the graph editor, and on empty
   timeline or viewer space (New ▸, Paste, Composition Settings…).
 - **Drag and drop:** footage and compositions from the Project panel onto the viewer or timeline (they land above the
@@ -269,8 +280,15 @@ buffers. The UI never freezes. Open the **Tracker** panel (or the *Motion Tracki
     decoding from the start, which helps with some AMD H.264 drivers.
   - Clips WebCodecs can't open fall back to a sequential `<video>` reader that uses `requestVideoFrameCallback`.
   - A status-bar indicator shows the decode path and the average decode time per frame. Hover it for details.
-- **Auto-save:** the project and its media persist in IndexedDB.
+- **Auto-save:** the project and its media persist in IndexedDB. The last edit is written when the tab is hidden or
+  closed, and the restored session is still marked as unsaved until it is written to a file.
 - **Save / Open:** a `.pooe` file is a ZIP holding `project.json`, the media and the roto mattes.
+- **Unsaved work is protected:** New Project, Open Project, Load Demo Project and dropping a `.pooe` file ask to save
+  first (Save / Don't Save / Cancel) when the open project has changes that were never written to a file.
+- **Damaged files are reported, not swallowed:** an import names the files it could not read; a project file with an
+  unreadable media item still opens, with that item offline.
+- **Recovery:** if a panel fails to draw, only that panel shows a recovery card (Reload Panel / Undo Last Change) and
+  the rest of the app keeps working. Start-up survives a stored session or media it can no longer read.
 - Undo / redo covers every edit. Drags, scrubs, slider moves and multi-layer commands count as single undo steps.
 - Layer audio follows time remapping: it speeds up, slows down and reverses with the picture.
 
@@ -320,6 +338,8 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for how the engine works.
   renders correctly but slowly. Use the viewer's Resolution menu, Draft 3D (⚡) or a lower RAM-preview resolution.
 - H.264 and AAC encoding depend on the browser build (see Browser support above).
 - Raw camera formats and 3D model import are out of scope. Everything runs on standard web APIs.
+- Imported media is copied into the browser's IndexedDB so sessions survive a reload. The browser's storage quota
+  applies; clearing the site's data frees it (save a `.pooe` first).
 - **SAM 2 propagation.** The public ONNX export of SAM 2 has no memory-attention modules, so video propagation carries
   the previous matte forward as flow-warped box/point prompts (see ARCHITECTURE §14.5). It is not SAM 2's native memory
   bank. The model (62–155 MB depending on precision) downloads from Hugging Face on first use. Load it from local files
