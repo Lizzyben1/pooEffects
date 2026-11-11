@@ -19,7 +19,7 @@ import { LABEL_COLORS } from '../../math/color';
 import { cachedFrames } from '../../state/cache';
 import { cfgKey, getViewParams } from '../../state/engine';
 import { compContextMenu, keyframeContextMenu, layerContextMenu } from '../menus/layerMenu';
-import { DND_EFFECT, DND_ITEM, addProjectItemToComp } from '../commands';
+import { DND_EFFECT, DND_ITEM, TIMELINE_BOTH_MIN, addProjectItemToComp, cycleTimelineColumns } from '../commands';
 import { TimeDisplay } from '../controls/TimeDisplay';
 import { GraphEditor } from './GraphEditor';
 import { scrubAt } from '../../audio/engine';
@@ -383,6 +383,9 @@ function Timeline({ comp }: { comp: Composition }) {
   }, [comp.layers]);
 
   const lw = tl.leftWidth;
+  // both columns by default; when the pane is too narrow for that, Switches (it has the 3D switch) wins
+  const columns = tl.columns === 'both' && lw < TIMELINE_BOTH_MIN ? 'switches' : tl.columns;
+  const showSwitches = columns !== 'modes', showModes = columns !== 'switches';
   // zoom slider: 0 = whole comp fits, 1 = 400× closer
   const fitPps = Math.max(1, trackW - 20) / comp.duration;
   const zoomNorm = Math.max(0, Math.min(1, Math.log(pxPerSec / fitPps) / Math.log(400))) || 0;
@@ -414,9 +417,16 @@ function Timeline({ comp }: { comp: Composition }) {
           <span className="ch-label" />
           <span className="ch-idx">#</span>
           <span className="ch-name">Layer Name</span>
-          <span className="ch-sw" onClick={() => setTimeline(comp.id, { showModes: !tl.showModes })} title="Toggle Switches / Modes (F4)">
-            {tl.showModes ? 'Mode · TrkMat' : 'Switches'}
-          </span>
+          {showSwitches && (
+            <span className={`ch-sw${showModes ? ' compact' : ''}`} onClick={() => cycleTimelineColumns(comp.id)} title="Layer switches: shy, collapse, quality, effects, motion blur, adjustment, 3D — click or press F4 to change the columns shown">
+              Switches
+            </span>
+          )}
+          {showModes && (
+            <span className="ch-sw" onClick={() => cycleTimelineColumns(comp.id)} title="Blending mode and track matte — click or press F4 to change the columns shown">
+              Mode · TrkMat
+            </span>
+          )}
           <span className="ch-parent">Parent & Link</span>
         </div>
         <div className="tl-colhead-right" />
@@ -503,7 +513,7 @@ function Timeline({ comp }: { comp: Composition }) {
               const i = start + k;
               return (
                 <div key={r.key} className={`tl-row k-${r.kind}${r.kind === 'layer' && selLayers.includes(r.layer.id) ? ' sel' : ''}`} style={{ top: offsets[i], height: r.h }}>
-                  <LeftCell row={r} comp={comp} dir={layerDir} fe={fe} t={t} showModes={tl.showModes} selected={r.kind === 'layer' && selLayers.includes(r.layer.id)} onLayerPointerDown={stableLayerDown} onPickWhip={stablePickWhip} dropTarget={dropRow === i} />
+                  <LeftCell row={r} comp={comp} dir={layerDir} fe={fe} t={t} showSwitches={showSwitches} showModes={showModes} selected={r.kind === 'layer' && selLayers.includes(r.layer.id)} onLayerPointerDown={stableLayerDown} onPickWhip={stablePickWhip} dropTarget={dropRow === i} />
                   {!tl.graphEditor && <TrackCell row={r} tm={tm} trackW={trackW} selKeys={selKeys} />}
                 </div>
               );
@@ -551,12 +561,12 @@ function Timeline({ comp }: { comp: Composition }) {
   );
 }
 
-type LeftCellProps = { row: Row; comp: Composition; dir: LayerDirEntry[]; fe: FrameEval; t: number; showModes: boolean; selected: boolean; onLayerPointerDown: (e: React.PointerEvent, l: Layer) => void; onPickWhip: (e: React.PointerEvent, l: Layer) => void; dropTarget: boolean };
+type LeftCellProps = { row: Row; comp: Composition; dir: LayerDirEntry[]; fe: FrameEval; t: number; showSwitches: boolean; showModes: boolean; selected: boolean; onLayerPointerDown: (e: React.PointerEvent, l: Layer) => void; onPickWhip: (e: React.PointerEvent, l: Layer) => void; dropTarget: boolean };
 
-function LeftCell({ row, comp, dir, fe, t, showModes, selected, onLayerPointerDown, onPickWhip, dropTarget }: LeftCellProps) {
+function LeftCell({ row, comp, dir, fe, t, showSwitches, showModes, selected, onLayerPointerDown, onPickWhip, dropTarget }: LeftCellProps) {
   switch (row.kind) {
     // layer rows show nothing time-dependent: keeping `fe` / `t` away from them lets React.memo hold during playback
-    case 'layer': return <LayerLeft row={row} comp={comp} dir={dir} showModes={showModes} selected={selected} onLayerPointerDown={onLayerPointerDown} onPickWhip={onPickWhip} dropTarget={dropTarget} />;
+    case 'layer': return <LayerLeft row={row} comp={comp} dir={dir} showSwitches={showSwitches} showModes={showModes} selected={selected} onLayerPointerDown={onLayerPointerDown} onPickWhip={onPickWhip} dropTarget={dropTarget} />;
     case 'prop': return <PropLeft row={row} comp={comp} fe={fe} t={t} />;
     case 'group': return <GroupLeft row={row} comp={comp} />;
     case 'field': return <FieldLeft row={row} comp={comp} />;

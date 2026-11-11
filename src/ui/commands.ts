@@ -3,7 +3,7 @@
 // maps to a named command so behaviour is consistent everywhere.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { activeComp, getApp, openDialog, redo, setApp, setViewer, toast, undo, viewerOf, loadProject } from '../state/store';
+import { activeComp, getApp, openDialog, redo, setApp, setTimeline, setViewer, timelineOf, toast, undo, viewerOf, loadProject } from '../state/store';
 import * as A from '../state/actions';
 import { getTime, setTime } from '../state/time';
 import {
@@ -207,10 +207,18 @@ export function newLayer(kind: 'text' | 'solid' | 'null' | 'shape' | 'adjustment
       break;
     case 'camera':
       A.addLayer(cid, createCameraLayer(c, 35, 'Camera 1'), { index: 0 });
+      hint3D(c);
       break;
     default:
       A.addLayer(cid, createLightLayer(c, kind), { index: 0 });
+      hint3D(c);
   }
+}
+
+/** Cameras and lights only act on 3D layers; say so when the comp has none (the usual "nothing happened" trap). */
+export function hint3D(c: Composition): void {
+  if (c.layers.some((l) => l.threeD)) return;
+  toast('Cameras and lights only affect 3D layers. Make a layer 3D with its cube switch in the timeline, or Layer ▸ Switches ▸ 3D Layer.', 'info', 6500);
 }
 
 export function setTool(t: ReturnType<typeof getApp>['tool']): void {
@@ -239,6 +247,18 @@ export function zoomViewer(f: number | 'fit' | 1): void {
     const next = f > 1 ? steps.find((s) => s > cur * 1.01) ?? 32 : [...steps].reverse().find((s) => s < cur * 0.99) ?? 0.015625;
     setViewer(c.id, { zoom: next, panX: v.panX * (next / cur), panY: v.panY * (next / cur) });
   }
+}
+
+/** Narrower than this, the timeline's left pane cannot fit the Switches and Modes columns side by side. */
+export const TIMELINE_BOTH_MIN = 690;
+
+/** F4 / column header: both → switches → modes → both (skipping 'both' when the pane is too narrow to show it). */
+export function cycleTimelineColumns(compId: string): void {
+  const tl = timelineOf(getApp(), compId);
+  const fits = tl.leftWidth >= TIMELINE_BOTH_MIN;
+  const shown = tl.columns === 'both' && !fits ? 'switches' : tl.columns;
+  const next = shown === 'both' ? 'switches' : shown === 'switches' ? 'modes' : fits ? 'both' : 'switches';
+  setTimeline(compId, { columns: next });
 }
 
 export function togglePanel(p: PanelId): void {

@@ -429,6 +429,11 @@ a.btn {
 .ch-sw:hover {
   color: var(--text);
 }
+/* Switches next to Modes: seven icons need less room than the pair of dropdowns */
+.ch-sw.compact,
+.tl-left .switches.compact {
+  width: 140px;
+}
 .ch-parent {
   width: 132px;
   flex: none;
@@ -533,12 +538,13 @@ a.btn {
 }
 /* toggles that are usually off (audio, solo, lock): always visible, faded until enabled */
 .sw.dim:not(.on) {
-  opacity: 0.32;
+  opacity: 0.5;
 }
 .sw.dim:not(.on):hover {
   opacity: 1;
 }
-.tl-left .av .sw.dim.on {
+.tl-left .av .sw.dim.on,
+.tl-left .switches .sw.dim.on {
   color: var(--accent-2);
 }
 .fx-card-head .sw.on,

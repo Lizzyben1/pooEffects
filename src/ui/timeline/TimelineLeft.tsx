@@ -59,6 +59,7 @@ export interface LeftProps {
   comp: Composition;
   /** stable while no layer is added, removed, renamed or reordered */
   dir: LayerDirEntry[];
+  showSwitches: boolean;
   showModes: boolean;
   selected: boolean;
   onLayerPointerDown: (e: React.PointerEvent, layer: Layer) => void;
@@ -78,7 +79,7 @@ function toggleKey(key: string, e: React.MouseEvent) {
   } else A.toggleExpanded(key, open);
 }
 
-export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showModes, selected, onLayerPointerDown, onPickWhip, dropTarget }: LeftProps) {
+export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showSwitches, showModes, selected, onLayerPointerDown, onPickWhip, dropTarget }: LeftProps) {
   const layer = (row as Extract<Row, { kind: 'layer' }>).layer;
   const index = (row as Extract<Row, { kind: 'layer' }>).index;
   const expanded = useApp((s) => !!s.expanded[layer.id]);
@@ -147,17 +148,18 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showModes, se
           {layer.name}
         </span>
       )}
-      {!showModes ? (
-        <div className="switches">
+      {showSwitches && (
+        <div className={`switches${showModes ? ' compact' : ''}`}>
           <SwitchBtn on={layer.shy} onClick={sw('shy')} title="Shy" dim><ShyIcon size={13} /></SwitchBtn>
           <SwitchBtn on={layer.collapse} onClick={sw('collapse')} title="Collapse Transformations / Continuously Rasterize" dim><CollapseIcon size={13} /></SwitchBtn>
           <SwitchBtn on={true} onClick={(e) => { e.stopPropagation(); A.setLayerFields(comp.id, ids(), { quality: layer.quality === 'best' ? 'draft' : 'best' }); }} title={`Quality: ${layer.quality}`}><QualityIcon size={13} best={layer.quality === 'best'} /></SwitchBtn>
           <SwitchBtn on={layer.effectsEnabled && layer.effects.length > 0} onClick={sw('effectsEnabled')} title="Effects" dim={!layer.effects.length || !layer.effectsEnabled}><FxIcon size={13} /></SwitchBtn>
           <SwitchBtn on={layer.motionBlur} onClick={sw('motionBlur')} title="Motion Blur" dim><MotionBlurIcon size={13} /></SwitchBtn>
           <SwitchBtn on={layer.adjustment} onClick={sw('adjustment')} title="Adjustment Layer" dim><AdjustmentIcon size={12} /></SwitchBtn>
-          <SwitchBtn on={layer.threeD} onClick={sw('threeD')} title="3D Layer" dim><CubeIcon size={13} /></SwitchBtn>
+          <SwitchBtn on={layer.threeD} onClick={sw('threeD')} title="3D Layer — adds Z position, X/Y rotation and orientation, and lets cameras and lights affect this layer" dim><CubeIcon size={13} /></SwitchBtn>
         </div>
-      ) : (
+      )}
+      {showModes && (
         <div className="modes">
           <LazySelect className="mini-select" value={layer.blendMode} label={BLEND_LABELS[layer.blendMode]} title="Blending Mode" onPointerDown={(e) => e.stopPropagation()} onChange={(e) => A.setLayerFields(comp.id, ids(), { blendMode: e.target.value as Layer['blendMode'] })}>
             {() => BLEND_MODES.map((m) => <option key={m} value={m}>{BLEND_LABELS[m]}</option>)}
@@ -214,7 +216,7 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showModes, se
 }, (a, b) => {
   // only this layer (or the sibling directory) changing re-renders the row; the comp object itself changes on every edit
   const ra = a.row as Extract<Row, { kind: 'layer' }>, rb = b.row as Extract<Row, { kind: 'layer' }>;
-  return ra.layer === rb.layer && ra.index === rb.index && a.comp.id === b.comp.id && a.dir === b.dir && a.showModes === b.showModes
+  return ra.layer === rb.layer && ra.index === rb.index && a.comp.id === b.comp.id && a.dir === b.dir && a.showSwitches === b.showSwitches && a.showModes === b.showModes
     && a.selected === b.selected && a.dropTarget === b.dropTarget && a.onLayerPointerDown === b.onLayerPointerDown && a.onPickWhip === b.onPickWhip;
 });
 

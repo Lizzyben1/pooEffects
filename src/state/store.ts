@@ -275,7 +275,9 @@ export function defaultViewer(): ViewerState {
 }
 
 export function defaultTimeline(): TimelineState {
-  return { pxPerSec: 120, scrollTime: 0, graphEditor: false, graphMode: 'auto', leftWidth: 600, showModes: true };
+  // wide enough for the Switches and Modes columns side by side when the window has the room
+  const wide = typeof window !== 'undefined' && window.innerWidth >= 1400;
+  return { pxPerSec: 120, scrollTime: 0, graphEditor: false, graphMode: 'auto', leftWidth: wide ? 720 : 600, columns: 'both' };
 }
 
 export function viewerOf(s: AppState, compId: string | null): ViewerState {

@@ -9,7 +9,7 @@ import { activeComp, getApp, setApp, setTimeline, timelineOf, toast } from '../.
 import * as A from '../../state/actions';
 import { getTime, timeStore } from '../../state/time';
 import { stop as stopPlayback, togglePlay } from '../../state/playback';
-import { commands as C, isMac, newLayer, setTool, togglePanel } from '../commands';
+import { commands as C, cycleTimelineColumns, isMac, newLayer, setTool, togglePanel } from '../commands';
 import { toggleMaximize } from '../dock/Dock';
 import { frameDuration } from '../../core/time';
 import { layerSpan, toLayerTime } from '../../core/evaluate';
@@ -184,7 +184,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: [';'], label: 'Toggle Frame-Level Zoom', group: 'Timeline', run: toggleFrameZoom },
   { keys: ['Shift+F3'], label: 'Toggle Graph Editor', group: 'Timeline', run: withComp((id) => setTimeline(id, { graphEditor: !timelineOf(getApp(), id).graphEditor })) },
   { keys: ['F'], label: 'Fit Graph Editor View', group: 'Timeline', run: () => {}, displayOnly: true, note: 'while the Graph Editor is open' },
-  { keys: ['F4'], label: 'Toggle Switches / Modes Columns', group: 'Timeline', run: withComp((id) => setTimeline(id, { showModes: !timelineOf(getApp(), id).showModes })) },
+  { keys: ['F4'], label: 'Cycle Switches / Modes Columns', group: 'Timeline', run: withComp((id) => cycleTimelineColumns(id)) },
 
   // Layers
   { keys: ['Ctrl+N', 'Alt+Shift+N'], label: 'New Composition…', group: 'Layers', run: C.newComp, note: 'Ctrl+N is reserved by most browsers outside an installed app' },

@@ -19,7 +19,7 @@ import { drawOverlay, editablePaths, hitHandle, type HandleHit, type OverlayStat
 import {
   addEffect, addEffectToSelection, addLayer, addMask, addShapeItem, openComp, selectLayers, setKeyframeValue, setPropValue, setSourceText, setSpatialTangents, deselectAll,
 } from '../../state/actions';
-import { DND_EFFECT, DND_ITEM, addProjectItemToComp } from '../commands';
+import { DND_EFFECT, DND_ITEM, addProjectItemToComp, hint3D } from '../commands';
 import { getProp } from '../../core/props';
 import { keyframedValue } from '../../anim/interpolate';
 import { FrameEval, toCompTime, toLayerTime } from '../../core/evaluate';
@@ -828,6 +828,11 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
       }, undefined, false);
       return;
     }
+    // moving the camera changes nothing on screen while every layer is 2D: explain instead of looking broken
+    if (!warned3D.has(comp.id) && !v.comp.layers.some((l) => l.threeD)) {
+      warned3D.add(comp.id);
+      hint3D(v.comp);
+    }
     let cam = v.fe.activeCameraLayer();
     if (!cam) {
       const c = createCameraLayer(comp, 50);
@@ -1376,6 +1381,9 @@ export function ViewPane({ comp, index, view, isActivePane }: Props) {
     </div>
   );
 }
+
+/** comps for which the "no 3D layers" hint was already shown this session */
+const warned3D = new Set<string>();
 
 let probeCtx: CanvasRenderingContext2D | null = null;
 /** 1×1 software canvas used to read single pixels of a frame. */

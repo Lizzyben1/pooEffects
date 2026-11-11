@@ -34,6 +34,8 @@ export interface ViewerState {
   draft3D: boolean;
 }
 
+export type TimelineColumns = 'both' | 'switches' | 'modes';
+
 export interface TimelineState {
   /** pixels per second */
   pxPerSec: number;
@@ -43,7 +45,11 @@ export interface TimelineState {
   /** 'auto' picks the speed graph when every graphed property is spatial (Position…), else the value graph */
   graphMode: 'auto' | 'value' | 'speed';
   leftWidth: number;
-  showModes: boolean;
+  /**
+   * Which layer columns the timeline shows. 'both' is the default so nothing is hidden (the 3D switch
+   * lives in Switches, blend mode and track matte in Modes); F4 cycles through the three.
+   */
+  columns: TimelineColumns;
 }
 
 /** A timeline sub-item the user explicitly clicked (what Delete / Duplicate act on before layers). */
