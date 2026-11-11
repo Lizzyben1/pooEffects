@@ -97,10 +97,27 @@ export function installFocusRelease(): () => void {
     const tag = a.tagName;
     if (tag === 'BUTTON' || (tag === 'INPUT' && ['range', 'checkbox', 'radio', 'button'].includes((a as HTMLInputElement).type))) release(a);
   };
+  // A press outside a text field ends typing there. The browser does this by itself unless the press
+  // is cancelled — and the viewer and timeline cancel it for pans and drags, which left the field
+  // focused and swallowing every shortcut.
+  const onDown = (e: PointerEvent) => {
+    const a = document.activeElement as HTMLElement | null;
+    const t = e.target as Element | null;
+    if (!a || !t || a === document.body || a.contains(t)) return;
+    if (!(a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) return;
+    // inside one dialog / popover the browser's own focus handling is right (a search field and its list)
+    const scope = a.closest('.dialog, .popover');
+    if (scope?.contains(t)) return;
+    // pressing another text control moves focus there by itself
+    if (t.closest('input, textarea, select, label, [contenteditable="true"]')) return;
+    a.blur();
+  };
   window.addEventListener('change', onChange, true);
   window.addEventListener('click', onClick, true);
+  window.addEventListener('pointerdown', onDown, true);
   return () => {
     window.removeEventListener('change', onChange, true);
     window.removeEventListener('click', onClick, true);
+    window.removeEventListener('pointerdown', onDown, true);
   };
 }

@@ -1,7 +1,7 @@
 // Left side of the timeline: layer rows (A/V switches, label, name, switches/modes, parent) and
 // property tree rows (twirl-downs, stopwatches, value editors, keyframe navigators, expressions).
 
-import { memo, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { ChevronRight, ChevronLeft, Eye, EyeOff, Volume2, Lock, RotateCcw, Trash, Equal, ChevronDown } from 'lucide-react';
 import type { Composition, Layer, PropValue, TextAnimatorPropKey, ShapeItemType } from '../../core/types';
 import type { FrameEval } from '../../core/evaluate';
@@ -86,6 +86,14 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showSwitches,
   const expanded = useApp((s) => !!s.expanded[layer.id]);
   const [renaming, setRenaming] = useState(false);
   const renameCancelled = useRef(false);
+  // Enter / the Rename command ask for this row's inline name field
+  const renameRequested = useApp((s) => s.renameLayerId === layer.id);
+  useEffect(() => {
+    if (!renameRequested) return;
+    setApp({ renameLayerId: null });
+    renameCancelled.current = false;
+    setRenaming(true);
+  }, [renameRequested]);
   const ids = () => (getApp().selLayers.includes(layer.id) ? getApp().selLayers : [layer.id]);
   const sw = (key: keyof Layer) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -129,6 +137,7 @@ export const LayerLeft = memo(function LayerLeft({ row, comp, dir, showSwitches,
           className="rename"
           autoFocus
           defaultValue={layer.name}
+          onFocus={(e) => e.target.select()}
           onPointerDown={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             e.stopPropagation();

@@ -178,7 +178,7 @@ export function layerContextMenu(compId: string, ids: string[]): MenuItem[] {
       : []),
     { label: 'Pre-compose…', shortcut: `${MOD}${SHIFT}C`, action: C.precompose },
     { separator: true },
-    { label: 'Rename', action: () => openDialog({ kind: 'rename', title: 'Rename Layer', value: first.name, onSubmit: (v) => A.setLayerFields(compId, [first.id], { name: v }) }) },
+    { label: 'Rename', shortcut: 'Enter', disabled: ids.length !== 1, action: C.renameLayer },
     { label: 'Duplicate', shortcut: `${MOD}D`, action: C.duplicate },
     { label: 'Split Layer', shortcut: `${MOD}${SHIFT}D`, action: C.split },
     { separator: true },

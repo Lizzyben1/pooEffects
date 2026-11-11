@@ -38,6 +38,8 @@ export interface AppState {
   selMask: string | null;
   /** timeline sub-item (effect, mask, shape item…) picked by clicking its row; cleared when the layer or keyframe selection changes */
   selTarget: SelTarget | null;
+  /** the layer whose timeline row should switch to its inline rename field (Enter / Rename command) */
+  renameLayerId: string | null;
 
   tool: ToolId;
   shapeTool: ShapeToolKind;
@@ -107,6 +109,7 @@ export const useApp = create<AppState>()(() => ({
   selShapeItem: null,
   selMask: null,
   selTarget: null,
+  renameLayerId: null,
   tool: 'select',
   shapeTool: 'rect',
   cameraTool: 'orbit',

@@ -196,6 +196,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ['Ctrl+Alt+Shift+C'], label: 'New Camera', group: 'Layers', run: C.newCamera },
   { keys: ['Ctrl+Alt+Shift+L'], label: 'New Light', group: 'Layers', run: () => newLayer('point') },
   { keys: ['Ctrl+Shift+Y'], label: 'Layer Settings…', group: 'Layers', run: C.layerSettings },
+  { keys: ['Enter'], label: 'Rename Selected Layer', group: 'Layers', run: C.renameLayer },
   { keys: ['Ctrl+Shift+N', 'Ctrl+Alt+M'], label: 'New Mask', group: 'Layers', run: C.newMask },
   { keys: ['Ctrl+Shift+C'], label: 'Pre-compose…', group: 'Layers', run: C.precompose },
   { keys: ['Ctrl+Alt+T'], label: 'Enable Time Remapping', group: 'Layers', run: C.timeRemap },
@@ -337,6 +338,8 @@ export function installKeymap(): () => void {
     }
     const combo = comboOf(e);
     if (!combo) return;
+    // Enter on a focused button or link (keyboard navigation) activates that control only
+    if (combo === 'Enter' && (e.target as HTMLElement | null)?.closest?.('button, a, [role="button"], [role="menuitem"]')) return;
     const sc = table.get(combo);
     if (!sc) return;
     e.preventDefault();

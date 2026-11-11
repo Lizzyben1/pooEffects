@@ -494,7 +494,30 @@ export const commands = {
     const ns = needSel();
     if (!ns) return;
     const l = comp()!.layers.find((x) => x.id === ns[1][0]);
-    if (l?.type === 'solid' || l?.type === 'null') openDialog({ kind: 'solid', compId: ns[0], layerId: l.id });
+    if (!l) return;
+    // every layer type leads somewhere: the command never silently does nothing
+    if (l.type === 'solid' || l.type === 'null') openDialog({ kind: 'solid', compId: ns[0], layerId: l.id });
+    else if (l.type === 'precomp' && l.source?.compId && getApp().project.comps[l.source.compId]) openDialog({ kind: 'compSettings', compId: l.source.compId });
+    else if (l.type === 'text') {
+      togglePanel('character');
+      toast('Text settings are in the Character panel — double-click the text in the viewer to edit it', 'info', 3500);
+    } else if ((l.type === 'image' || l.type === 'video' || l.type === 'audio') && l.source?.footageId && getApp().project.footage[l.source.footageId]) openDialog({ kind: 'interpret', footageId: l.source.footageId });
+    else {
+      if (!getApp().expanded[l.id]) A.toggleExpanded(l.id, true);
+      toast(`${l.type === 'camera' ? 'Camera' : l.type === 'light' ? 'Light' : 'This layer’s'} options are in the timeline — the layer has been opened`, 'info', 3000);
+    }
+  },
+  renameLayer: () => {
+    const ns = needSel();
+    if (!ns) return;
+    if (ns[1].length !== 1) {
+      toast('Select a single layer to rename it', 'info', 2200);
+      return;
+    }
+    const id = ns[1][0];
+    setApp((s) => ({ renameLayerId: id, layout: ensurePanel(s.layout, 'timeline') }));
+    // nobody picked the request up (the row is scrolled out of view): do not let it fire later
+    setTimeout(() => getApp().renameLayerId === id && setApp({ renameLayerId: null }), 400);
   },
   timeReverse: () => {
     const ns = needSel();

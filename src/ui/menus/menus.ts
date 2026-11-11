@@ -124,6 +124,7 @@ export const MENUS: { label: string; items: () => MenuItem[] }[] = [
       }]),
       ...gate(!a.layers, [
       { label: 'Layer Settings…', shortcut: `${MOD}${SHIFT}Y`, action: C.layerSettings },
+      { label: 'Rename', shortcut: 'Enter', disabled: getApp().selLayers.length !== 1, action: C.renameLayer },
       { separator: true },
       { label: 'New Mask', shortcut: `${MOD}${SHIFT}N`, action: C.newMask },
       {
